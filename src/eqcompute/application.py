@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from eqcompute.data.collate import collate_molecules
 from eqcompute.factories import DATASETS, MODELS, TASKS, construct
 from eqcompute.metrics.regression import RegressionMetrics
-from eqcompute.tasks.target_transform import TargetTransform
+from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import seed_everything
 from eqcompute.training.optim import build_optimizer
 from eqcompute.training.trainer import Trainer

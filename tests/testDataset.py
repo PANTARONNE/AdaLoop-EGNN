@@ -5,9 +5,9 @@ import pytest
 import torch
 
 from eqcompute.data.collate import collate_molecules
-from eqcompute.data.qm9 import TARGETS, QM9Adapter
+from eqcompute.data.QM9 import TARGETS, QM9Adapter
 from eqcompute.data.splits import make_splits
-from eqcompute.tasks.target_transform import TargetTransform
+from eqcompute.tasks.targetTransform import TargetTransform
 
 
 def test_collation_identity_and_shapes(samples, batch):

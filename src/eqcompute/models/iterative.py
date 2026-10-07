@@ -1,6 +1,6 @@
 from torch import nn
 
-from eqcompute.models.backbones.egnn import EGNNInitializer, EGNNStep
+from eqcompute.models.backbones.EGNN import EGNNInitializer, EGNNStep
 from eqcompute.models.execution import FixedDepthExecution
 from eqcompute.models.heads import PredictionHead, ScalarReadout
 from eqcompute.models.operators import OperatorBank

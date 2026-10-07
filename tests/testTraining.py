@@ -5,12 +5,12 @@ import torch
 from omegaconf import OmegaConf
 
 from eqcompute.application import make_loader
-from eqcompute.evaluation.prediction_writer import write_predictions
+from eqcompute.evaluation.predictionWriter import write_predictions
 from eqcompute.metrics.regression import RegressionMetrics
 from eqcompute.models.iterative import build_egnn
 from eqcompute.models.trace import TraceSpec
 from eqcompute.tasks.regression import RegressionTask
-from eqcompute.tasks.target_transform import TargetTransform
+from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import load_checkpoint, seed_everything
 from eqcompute.training.optim import build_optimizer
 from eqcompute.training.trainer import Trainer

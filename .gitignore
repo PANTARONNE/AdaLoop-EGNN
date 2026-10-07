@@ -3,7 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-data/
+/data/
 outputs/
 .hydra/
 .venv/

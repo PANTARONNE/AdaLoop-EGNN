@@ -24,6 +24,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+python_files = ["test*.py"]
 markers = ["integration: requires a locally downloaded QM9 dataset"]
 
 [tool.ruff]

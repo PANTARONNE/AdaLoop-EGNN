@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 from eqcompute.contracts import PropertyContext, TaskResult
 from eqcompute.models.trace import TraceSpec
-from eqcompute.tasks.target_transform import TargetTransform
+from eqcompute.tasks.targetTransform import TargetTransform
 
 
 class RegressionTask:

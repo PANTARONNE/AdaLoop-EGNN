@@ -1,0 +1,5 @@
+# @package _global_
+model:
+  weight_tying: false
+  execution:
+    depth: 4  # Default; overridden by model.execution.depth or sweepDepth.py --depths.

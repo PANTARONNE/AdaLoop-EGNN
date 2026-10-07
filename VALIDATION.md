@@ -109,3 +109,31 @@ epoch 4 未改善验证误差，原 best.pt 被完整保留，SHA256 与来源�
 - radius graph 的逐分子 O(N²) 实现面向 QM9；大分子需替换构图实现。
 - 仅支持 epoch 边界恢复；CUDA reduction 不保证跨设备/版本逐位一致。
 - 没有实现 adaptive halting、AdaLoop、Oracle、复杂度分析、计算惩罚、QMugs、PaiNN 或 Matbench。
+
+## 多 GPU 深度调度验收
+
+新增 `scripts/sweepDepth.py` 与独立的 `eqcompute.launching.GPUQueue` 模块。
+现有训练入口、模型、Task、Trainer 和 checkpoint 实现没有修改，也没有新增依赖。
+
+`python -m pytest -q`：**45 passed，1 skipped**；Ruff 全部通过。
+跳过项为未设置 `QM9_ROOT` 的可选真实数据集集成测试；另单独完成了下述真实数据训练。
+新增 19 项测试覆盖 depth × seed 展开、必填 tying、配置覆盖、重复与越界参数、
+已有 CUDA 可见范围、无副作用 dry-run，以及真实子进程执行中的 GPU 槽位复用、
+失败后继续派发、启动失败记录和 SIGTERM 对训练进程及其子进程的清理。
+并发调度测试使用普通 Python 子进程模拟 GPU 任务，不等于真实多 GPU 验证。
+
+本机 WSL / RTX 4070 使用已有 QM9 缓存，实际运行：
+
+```bash
+python scripts/sweepDepth.py --gpus 0 --depths 1,2 --seeds 0,1 \
+  --weight-tying false -- experiment=qm9_smoke trainer.epochs=1 \
+  output_root=outputs/sweep_validation
+```
+
+结果：4 个任务全部成功，调度器退出码 0；均使用 `cuda:0`，每个任务拥有独立日志、
+单 epoch 指标和非空 `best.pt` / `last.pt`。四个任务 split ID 相同；
+K=1 的参数量为 11,521，K=2 为 18,145。这里只验证流程，不比较模型效果。
+
+[该批次任务清单](outputs/sweep_validation/_depth_sweeps/20261007T161910_f4d78d87/jobs.json)。
+目标单机 Linux / 8 × RTX 4090 当前无法访问，尚未执行真实 8 卡并行训练。
+可在目标服务器先运行 README 中的双卡 smoke 命令，再启动正式 sweep。

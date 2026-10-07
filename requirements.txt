@@ -1,0 +1,25 @@
+# Linux x86_64, single machine with NVIDIA GPUs (including the 8-GPU sweep).
+# Use Python 3.11, matching the project's validated environment.
+# Run from the repository root:
+#   python -m pip install -r requirements.txt
+#   python -m pip check
+#
+# Pin direct dependencies to the versions recorded in requirements-wsl.lock.txt.
+# Transitive dependencies are resolved by pip; this is not a full lock file.
+# CUDA wheel source: https://pytorch.org/get-started/previous-versions/#v231
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# Training and evaluation
+torch==2.3.1+cu121
+torch-geometric==2.7.0
+numpy==1.26.4
+hydra-core==1.3.2
+omegaconf==2.3.0
+matplotlib==3.11.2
+
+# Tests and linting
+pytest==8.4.2
+ruff==0.16.10
+
+# Install the local eqcompute package used by scripts/train.py and sweepDepth.py.
+-e .

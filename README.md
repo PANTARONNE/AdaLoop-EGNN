@@ -51,7 +51,7 @@ hidden_dim=32、K=3、3 epochs。其误差只用于检查流程，不是基准�
 完整单次训练和不同配置：
 
 ```bash
-python scripts/train.py experiment=qm9_egnn_depth4
+python scripts/train.py experiment=qm9_egnn_depth
 python scripts/train.py experiment=qm9_loop_egnn_depth4 task.target=gap
 python scripts/train.py experiment=qm9_loop_all_steps
 ```
@@ -59,14 +59,93 @@ python scripts/train.py experiment=qm9_loop_all_steps
 固定深度 sweep（会产生多个独立训练，不在 smoke 验证中自动启动）：
 
 ```bash
-python scripts/train.py -m experiment=qm9_egnn_depth4 \
+python scripts/train.py -m experiment=qm9_egnn_depth \
   'model.execution.depth=1,2,3,4,6,8,10,12' \
   'model.weight_tying=false,true' 'seed=0,1,2'
 ```
 
+`experiment=qm9_egnn_depth` 对应 `configs/experiment/qm9_egnn_depth.yaml`。
+默认深度为 4；单次训练可用 `model.execution.depth=8` 覆盖，
+多卡扫描由 `sweepDepth.py --depths ...` 为每个任务设置深度。
+
 Hydra preset 只覆盖差异项，没有重复的 train_depthN.py。
 Hydra 的 sweep 记录单独保存在 `outputs/_sweeps/`；每个训练任务仍有独立运行目录。
 从仓库根目录启动；相对数据路径按当前目录解释，并在保存配置中解析为绝对路径。
+
+## 多 GPU 深度扫描（单机 Linux）
+
+新增入口 `scripts/sweepDepth.py` 扫描 `depth × seed`。每个组合是独立单卡训练，
+每张指定 GPU 同时只运行一个任务，任务结束后立即领取下一个组合。
+`--weight-tying true/false` 必填，整批固定；该参数优先于 experiment preset 中的设置。
+
+例如在 8 张 GPU 上执行 8 个深度 × 3 个 seed，共 24 次 untied EGNN 训练：
+
+```bash
+python scripts/sweepDepth.py \
+  --gpus 0,1,2,3,4,5,6,7 \
+  --depths 1,2,3,4,6,8,10,12 \
+  --seeds 0,1,2 \
+  --weight-tying false -- \
+  experiment=qm9_egnn_depth task.target=mu
+```
+
+Loop-EGNN 使用 `--weight-tying true`。其他训练设置继续通过 `--` 后的 Hydra overrides
+传入，例如 `dataset.root=/data/qm9`、`trainer.epochs=200`、`loader.batch_size=128`。
+一次只扫描深度和 seed；不要再传 `-m`、逗号扫描、`seed=...`、`model.execution.depth=...`、
+`model.weight_tying=...`、`trainer.device=...`、`resume=...` 或 Hydra 运行控制参数。
+
+先检查任务列表而不准备数据、不创建输出、不启动训练：
+
+```bash
+python scripts/sweepDepth.py --gpus 0,1 --depths 2,4 --seeds 0,1 \
+  --weight-tying true --dry-run -- experiment=qm9_smoke
+```
+
+去掉 `--dry-run` 即为 4 个短训练的服务器验收命令。dry-run 只验证参数与配置，
+不验证 GPU 是否存在、可用或显存充足。
+
+GPU 编号按当前 CUDA 可见设备顺序解释。没有设置 `CUDA_VISIBLE_DEVICES` 时，
+`--gpus 0,1` 选择 CUDA 设备 0、1；若已有 `CUDA_VISIBLE_DEVICES=3,7`，
+`--gpus 0,1` 选择该列表中的两张卡。子进程只看见分配给它的单张卡，使用逻辑设备 `cuda:0`。
+指定列表视为已分配给本批次的 GPU，不检测其他程序是否占用这些卡。
+
+调度前通过现有 dataset factory 串行准备一次数据，完成后才并行启动训练，避免本批次
+首次下载/预处理冲突。服务器不能联网时需提前准备好完整 QM9 缓存并指定 `dataset.root`。
+各任务保持相同 dataset 配置和 `split_seed`，只改变训练 seed 和深度；模型、Task、Trainer
+及 checkpoint 格式均复用单次训练实现。每个进程各自加载数据，CPU 内存与
+`loader.num_workers` 的总开销会随并发任务数增加。
+
+相对数据和输出路径统一按仓库根目录解释；子进程使用启动脚本的同一个 Python 环境。
+输出保存在 `output_root` 下的独立批次目录：
+
+```text
+outputs/_depth_sweeps/<UTC_timestamp>_<id>/
+  jobs.json
+  logs/k2_s0.log
+  runs/k2_s0/<原有唯一运行目录>/
+    config.yaml
+    metadata.json
+    split_ids.json
+    checkpoints/{best.pt,last.pt}
+    metrics.csv
+    predictions/
+    logs/train.log
+```
+
+`jobs.json` 持续记录各任务参数、GPU、PID、状态、退出码、完整启动参数、日志和运行目录。
+任务日志还包含训练目录建立之前的启动错误。任一任务失败后继续派发其他任务，
+全部完成后有失败则退出码为 1，全成功为 0。Ctrl+C 或 SIGTERM 会停止本批次的训练进程
+及其 DataLoader 子进程，未启动任务标为 cancelled，调度器退出码为 130。
+
+失败任务手动重跑，例如只重跑 depth=4、seed=1，并保持其余训练参数一致：
+
+```bash
+python scripts/sweepDepth.py --gpus 0 --depths 4 --seeds 1 \
+  --weight-tying false -- experiment=qm9_egnn_depth task.target=mu
+```
+
+重跑创建新的批次与运行目录。需要从某个 `last.pt` 继续时，使用下文的单次训练恢复入口；
+本脚本不自动重试或恢复整批任务。原有 `scripts/train.py` 单次训练和 Hydra 串行 sweep 用法保留。
 
 ## 实验协议
 
@@ -88,6 +167,10 @@ U0（列 7）与 U0_atom（列 12）不是同一目标。
 
 ## 模型与数据流
 
+Python 文件名使用 lower camel case，专有简称保留大写，例如 `depthCurves.py`、
+`GPUQueue.py`、`EGNN.py`、`QM9.py`、`testCUDA.py`。`__init__.py` 与 `conftest.py`
+保留工具约定名称；pytest 通过 `test*.py` 发现测试文件。
+
 ```text
 Dataset -> collate -> SupervisedBatch
 Task -> Model(GraphInputs, PropertyContext) -> ModelOutput -> loss
@@ -97,7 +180,7 @@ Checkpoint -> 独立 predict -> CSV -> 离线 analysis
 
 - `contracts.py`：GraphInputs 与带标签的 SupervisedBatch 分开。
 - `data/`：QM9 adapter、稳定身份与持久化划分；不计算 loss。
-- `models/backbones/egnn.py`：initializer 与一次 EGNN 更新。
+- `models/backbones/EGNN.py`：initializer 与一次 EGNN 更新。
 - `models/operators.py`：参数所有权；tied 仅注册一个 step，untied 使用独立 ModuleList。
 - `models/execution.py`：固定执行次数；不定义 loss。
 - `models/heads.py`：读出与带 property context 的共享预测头。
@@ -177,7 +260,7 @@ python scripts/predict.py --checkpoint outputs/<run>/checkpoints/best.pt --split
 已有文件默认拒绝覆盖，可显式传入 `--overwrite`。
 
 ```bash
-python -m eqcompute.analysis.depth_curves \
+python -m eqcompute.analysis.depthCurves \
   outputs/<run>/predictions/test_best_by_depth.csv \
   --output outputs/<run>/predictions/depth_curve.png
 ```

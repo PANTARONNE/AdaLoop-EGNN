@@ -3,9 +3,9 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 from eqcompute.application import make_loader, resolve_device
-from eqcompute.evaluation.prediction_writer import file_hash, write_predictions
+from eqcompute.evaluation.predictionWriter import file_hash, write_predictions
 from eqcompute.factories import DATASETS, MODELS, TASKS, construct
-from eqcompute.tasks.target_transform import TargetTransform
+from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import load_checkpoint
 
 

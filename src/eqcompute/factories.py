@@ -1,4 +1,4 @@
-from eqcompute.data.qm9 import build_qm9
+from eqcompute.data.QM9 import build_qm9
 from eqcompute.models.iterative import build_egnn
 from eqcompute.tasks.regression import RegressionTask
 
