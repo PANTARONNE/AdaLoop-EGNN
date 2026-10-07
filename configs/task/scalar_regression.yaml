@@ -1,0 +1,5 @@
+name: scalar_regression
+target: mu
+normalization: standard
+supervision: final
+loss: mae

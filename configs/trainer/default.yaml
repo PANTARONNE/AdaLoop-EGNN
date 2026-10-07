@@ -1,0 +1,3 @@
+epochs: 200
+device: auto
+gradient_clip: 10.0

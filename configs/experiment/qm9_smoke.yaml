@@ -1,0 +1,16 @@
+# @package _global_
+dataset:
+  train_size: 128
+  val_size: 32
+  test_size: 32
+  subset_size: 192
+model:
+  hidden_dim: 32
+  num_rbf: 8
+  weight_tying: true
+  execution:
+    depth: 3
+loader:
+  batch_size: 32
+trainer:
+  epochs: 3

@@ -1,0 +1,29 @@
+defaults:
+  - dataset: qm9
+  - model: egnn
+  - task: scalar_regression
+  - optimizer: adamw
+  - trainer: default
+  - logging: csv
+  - _self_
+  - experiment: null
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+
+seed: 0
+loader:
+  batch_size: 128
+  num_workers: 0
+experiment_name: qm9_${task.target}_${model.name}_tied${model.weight_tying}_k${model.execution.depth}_${task.supervision}_s${seed}
+output_root: outputs
+resume: null
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: ${output_root}/_sweeps/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra.job.num}
+  output_subdir: null
+  job:
+    chdir: false

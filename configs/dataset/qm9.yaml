@@ -1,0 +1,7 @@
+name: qm9
+root: data/qm9
+split_seed: 42
+train_size: 110000
+val_size: 10000
+test_size: null
+subset_size: null
