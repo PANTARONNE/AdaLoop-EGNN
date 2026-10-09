@@ -268,6 +268,49 @@ python -m eqcompute.analysis.depthCurves \
 可追加 `--sample-id qm9:123`，样本必须实际存在于该 CSV。
 本模块只画误差曲线，不计算 Oracle 或 Minimum Sufficient Depth。
 
+## 汇总一次深度扫描
+
+`scripts/evalDepth.py` 读取当次扫描的 `jobs.json`，在终端按训练 Depth 汇总各 seed 的
+validation MAE 与 test MAE：
+
+```bash
+python scripts/evalDepth.py \
+  --sweep-dir outputs/_depth_sweeps/<批次目录> \
+  --device cuda:0
+```
+
+默认 `--device auto`；可指定 `cpu`。可选 `--batch-size 128` 控制缺失预测的评估批大小，
+`--precision 6` 控制小数位数。命令应在已安装项目的 Python 环境中运行。
+
+终端表格示例（以下数字仅作格式示意）：
+
+```text
+Target: mu | Unit: D | Model: egnn | weight_tying: false | supervision: final
+Mean ± sample SD (ddof=1); Seeds = evaluated/planned; checkpoint = best.pt.
+Depth  Seeds  Val MAE              Test MAE
+-----  -----  -------------------  -------------------
+1      3/3    0.125000 ± 0.008000  0.132000 ± 0.010000
+2      3/3    0.110000 ± 0.006000  0.118000 ± 0.007000
+4      1/3    0.098000 ± N/A       0.105000 ± N/A
+```
+
+每个 seed 使用按 validation MAE 选出的 `best.pt`：Val MAE 读取 checkpoint 中保存的
+`best_value`，Test MAE 使用该 checkpoint 在**最终训练深度**的预测计算，不混入中间读出。
+`±` 为各 seed 的样本标准差（ddof=1），只有一个有效 seed 时显示 `± N/A`，
+某个深度没有有效 seed 时两项指标显示 `N/A`。指标沿用目标属性的原始物理单位。
+
+脚本复用 `predictions/test_best_by_depth.csv`；缺失、checkpoint 哈希不匹配、
+实验信息不匹配或最终深度测试样本不完整时，调用现有预测模块重新评估并替换该 CSV。
+首次评估需访问 checkpoint 中记录的数据路径，多个任务按顺序在指定设备上评估。
+复制扫描目录后优先使用批次内的 `runs/k<depth>_s<seed>/` 寻找运行目录，
+数据集仍需在 checkpoint 记录的位置可访问。
+
+失败、未完成、缺少 checkpoint 或测试评估失败的任务会跳过并在 stderr 说明原因；
+Val/Test 只汇总同一组成功评估的 seed，`Seeds` 显示有效数/计划数。
+拒绝混合不同目标、单位、模型、数据划分、参数共享设置或监督协议，也拒绝重复 depth/seed。
+表格写入 stdout，可用 `> summary.txt` 保存；全部成功退出码为 0，有跳过任务为 1，
+输入配置错误为 2。测试集结果用于报告，深度与超参数选择仍依据验证集。
+
 ## 恢复训练
 
 ```bash
