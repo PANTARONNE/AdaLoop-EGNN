@@ -65,8 +65,14 @@ def train(config):
     device = resolve_device(config.trainer.device)
     if config.trainer.epochs < 1 or config.loader.batch_size < 1:
         raise ValueError("epochs and batch_size must be positive")
-    if config.trainer.gradient_clip <= 0 or config.loader.num_workers < 0:
+    if (
+        config.trainer.gradient_clip is not None and config.trainer.gradient_clip <= 0
+    ) or config.loader.num_workers < 0:
         raise ValueError("Invalid gradient_clip or num_workers")
+    if config.model.name == "egnn_orig" and (
+        config.dataset.name != "qm9_orig" or config.task.supervision != "final"
+    ):
+        raise ValueError("EGNNOrig requires dataset=qm9_orig and task.supervision=final")
     # Construct and validate model before downloading data.
     model = construct(MODELS, config.model.name, config.model, config.task.target).to(device)
     config.dataset.root = str(Path(config.dataset.root).resolve())
@@ -98,6 +104,7 @@ def train(config):
         "split_id": bundle.manifest["split_id"],
         "property": config.task.target,
         "unit": bundle.unit,
+        "target_convention": bundle.manifest.get("target_convention", "raw"),
         "device": str(device),
         "python": platform.python_version(),
         "packages": {

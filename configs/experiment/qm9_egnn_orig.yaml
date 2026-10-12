@@ -1,0 +1,28 @@
+# @package _global_
+defaults:
+  - override /dataset: qm9_orig
+  - override /model: egnn_orig
+  - override /optimizer: adam
+  - override /trainer: egnn_orig
+
+loader:
+  batch_size: 96
+task:
+  normalization: mad
+  supervision: final
+  loss: mae
+optimizer:
+  learning_rate: ${optimizer.property_learning_rates.${task.target}}
+  property_learning_rates:
+    mu: 0.0005
+    alpha: 0.0005
+    homo: 0.001
+    lumo: 0.001
+    gap: 0.001
+    r2: 0.0005
+    zpve: 0.0005
+    U0: 0.0005
+    U: 0.0005
+    H: 0.0005
+    G: 0.0005
+    Cv: 0.0005

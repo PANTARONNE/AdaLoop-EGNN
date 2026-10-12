@@ -14,9 +14,14 @@ class TargetTransform:
             raise ValueError("Training labels contain non-finite values")
         if mode == "none":
             return cls()
-        if mode != "standard":
-            raise ValueError("normalization must be standard or none")
-        return cls(train_targets.mean(), train_targets.std(unbiased=False).clamp_min(1e-8))
+        mean = train_targets.mean()
+        if mode == "mad":
+            scale = (train_targets - mean).abs().mean()
+        elif mode == "standard":
+            scale = train_targets.std(unbiased=False)
+        else:
+            raise ValueError("normalization must be standard, mad or none")
+        return cls(mean, scale.clamp_min(1e-8))
 
     def encode(self, values):
         return (values - self.mean) / self.scale

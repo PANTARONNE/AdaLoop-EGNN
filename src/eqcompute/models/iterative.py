@@ -1,6 +1,11 @@
 from torch import nn
 
 from eqcompute.models.backbones.EGNN import EGNNInitializer, EGNNStep
+from eqcompute.models.backbones.EGNNOrig import (
+    EGNNOrigInitializer,
+    EGNNOrigReadout,
+    EGNNOrigStep,
+)
 from eqcompute.models.execution import FixedDepthExecution
 from eqcompute.models.heads import PredictionHead, ScalarReadout
 from eqcompute.models.operators import OperatorBank
@@ -55,5 +60,22 @@ def build_egnn(config, property_name):
         ),
         execution,
         ScalarReadout(config.head.pooling),
+        PredictionHead(config.hidden_dim, property_name),
+    )
+
+
+def build_egnn_orig(config, property_name):
+    if config.hidden_dim < 2 or config.execution.name != "fixed":
+        raise ValueError("EGNNOrig requires hidden_dim >= 2 and fixed execution")
+    if not isinstance(config.weight_tying, bool):
+        raise ValueError("weight_tying must be a boolean")
+    execution = FixedDepthExecution(config.execution.depth)
+    return IterativeModel(
+        EGNNOrigInitializer(config.hidden_dim),
+        OperatorBank(
+            lambda: EGNNOrigStep(config.hidden_dim), config.weight_tying, execution.depth
+        ),
+        execution,
+        EGNNOrigReadout(config.hidden_dim),
         PredictionHead(config.hidden_dim, property_name),
     )

@@ -11,6 +11,7 @@ from eqcompute.training.checkpoint import (
     restore_rng,
     save_checkpoint,
 )
+from eqcompute.training.optim import build_scheduler
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class Trainer:
         self.device = device
         self.output_dir = Path(output_dir)
         self.config, self.metadata = config, metadata
+        self.scheduler = build_scheduler(config["trainer"].get("scheduler"), optimizer)
         self.generator = generator
         self.start_epoch, self.best_value = 0, float("inf")
 
@@ -53,8 +55,16 @@ class Trainer:
             raise ValueError("Resume configuration mismatch: gradient_clip")
         if checkpoint["metadata"]["split_id"] != self.metadata["split_id"]:
             raise ValueError("Resume split mismatch")
+        if checkpoint["config"]["trainer"].get("scheduler") != self.config["trainer"].get(
+            "scheduler"
+        ):
+            raise ValueError("Resume scheduler mismatch; keep the original scheduler.t_max")
+        if (checkpoint.get("scheduler") is None) != (self.scheduler is None):
+            raise ValueError("Checkpoint scheduler state is missing or incompatible")
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
         self.task.load_state_dict(checkpoint["task"])
         restore_rng(checkpoint["rng"], self.generator)
         self.start_epoch = checkpoint["epoch"] + 1
@@ -77,11 +87,11 @@ class Trainer:
                     raise FloatingPointError("Non-finite loss")
                 if training:
                     result.loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config["trainer"]["gradient_clip"],
-                        error_if_nonfinite=True,
-                    )
+                    clip = self.config["trainer"]["gradient_clip"]
+                    if clip is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), clip, error_if_nonfinite=True
+                        )
                     self.optimizer.step()
                 total_loss += result.loss.item() * result.num_graphs
                 count += result.num_graphs
@@ -91,18 +101,26 @@ class Trainer:
     def fit(self, train_loader, validation_loader, epochs):
         if epochs <= self.start_epoch:
             raise ValueError("epochs must exceed the completed epoch count")
+        if self.scheduler is not None and epochs > self.scheduler.T_max:
+            raise ValueError("epochs must not exceed the fixed cosine scheduler.t_max")
         for epoch in range(self.start_epoch, epochs):
+            learning_rate = self.optimizer.param_groups[0]["lr"]
             train = self._epoch(train_loader, True)
             validation = self._epoch(validation_loader, False)
             improved = validation["mae"] < self.best_value
             if improved:
                 self.best_value = validation["mae"]
+            # Exactly once per completed epoch, after optimization and validation.
+            # Save the advanced state so resumed training uses the next epoch's LR.
+            if self.scheduler is not None:
+                self.scheduler.step()
             payload = {
                 "format_version": 1,
                 "epoch": epoch,
                 "best_value": self.best_value,
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
                 "task": self.task.state_dict(),
                 "rng": capture_rng(self.generator),
                 "config": self.config,
@@ -113,6 +131,7 @@ class Trainer:
                 save_checkpoint(self.output_dir / "checkpoints/best.pt", payload)
             row = {
                 "epoch": epoch + 1,
+                "learning_rate": learning_rate,
                 **{f"train_{k}": v for k, v in train.items()},
                 **{f"validation_{k}": v for k, v in validation.items()},
             }

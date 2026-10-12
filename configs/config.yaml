@@ -12,7 +12,7 @@ defaults:
 
 seed: 0
 loader:
-  batch_size: 128
+  batch_size: 96
   num_workers: 0
 experiment_name: qm9_${task.target}_${model.name}_tied${model.weight_tying}_k${model.execution.depth}_${task.supervision}_s${seed}
 output_root: outputs

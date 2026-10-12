@@ -3,6 +3,11 @@
 当前仅实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测。
 不包含 adaptive halting、AdaLoop、计算惩罚、Oracle、QMugs、PaiNN 或晶体模型。
 
+新增独立的官方 QM9 EGNN 复现入口：`experiment=qm9_egnn_orig`。
+模型为 `EGNNOrig.py`，离线 XYZ 预处理为 `QM9Orig.py`；采用每 epoch 结束后一次 cosine
+调度。数据准备、配置、单位和与官方脚本的差异见 [EGNNOrig 使用说明](docs/EGNNOrig.md)。
+共享参数循环实验使用 `experiment=qm9_loop_egnn_orig`；多卡扫描指定 `--weight-tying true`。
+
 ## WSL 环境
 
 仓库在 Windows 的 `D:\prjs\AdaLoopEGNN`，对应 WSL 的 `/mnt/d/prjs/AdaLoopEGNN`。
@@ -52,7 +57,7 @@ hidden_dim=32、K=3、3 epochs。其误差只用于检查流程，不是基准�
 
 ```bash
 python scripts/train.py experiment=qm9_egnn_depth
-python scripts/train.py experiment=qm9_loop_egnn_depth4 task.target=gap
+python scripts/train.py experiment=qm9_loop_egnn_depth task.target=gap
 python scripts/train.py experiment=qm9_loop_all_steps
 ```
 
@@ -190,7 +195,7 @@ Checkpoint -> 独立 predict -> CSV -> 离线 analysis
 - `evaluation/`：逐深度预测流式写盘。
 - `analysis/`：仅消费结果文件，不参与 Trainer。
 
-该实现是记录了变体细节的 EGNN，不声称严格复现原论文的 QM9 配置：
+原有 `model.name=egnn` 实现是记录了变体细节的 EGNN，不声称严格复现原论文的 QM9 配置：
 原子序数 embedding；Gaussian RBF；有向 radius edges；mean message aggregation；
 特征残差和 LayerNorm；归一化相对向量、tanh 标量与 coordinate_scale=0.1 的坐标更新；
 默认 sum pooling 与共享标量 MLP head。

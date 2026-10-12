@@ -31,7 +31,7 @@ def test_presets_and_factory():
     with initialize_config_dir(
         config_dir=str(Path(__file__).resolve().parents[1] / "configs"), version_base="1.3"
     ):
-        config = compose(config_name="config", overrides=["experiment=qm9_loop_egnn_depth4"])
+        config = compose(config_name="config", overrides=["experiment=qm9_loop_egnn_depth"])
         assert config.model.weight_tying is True
         assert config.model.execution.depth == 4
         assert config.task.supervision == "final"
