@@ -38,3 +38,31 @@ def test_presets_and_factory():
         assert "tiedTrue_k4_final" in config.experiment_name
     with pytest.raises(ValueError, match="Unknown component"):
         construct(MODELS, "adaloop")
+
+
+@pytest.mark.parametrize("preset", [
+    "qm9_egnn_orig", "qm9_loop_egnn_orig", "qm9_loop_egnn_orig_diagnostic",
+    "qm9_adaloop_egnn_orig", "qm9_adaloop_egnn_orig_smoke",
+])
+def test_orig_backbone_presets_use_local_pyg_qm9(preset):
+    from pathlib import Path
+
+    with initialize_config_dir(
+        config_dir=str(Path(__file__).resolve().parents[1] / "configs"), version_base="1.3"
+    ):
+        config = compose(config_name="config", overrides=[f"experiment={preset}"])
+    assert config.dataset.name == "qm9"
+    assert config.dataset.root == "data/qm9"
+    assert config.model.name == "egnn_orig"
+    assert config.task.normalization == "mad"
+    assert "subtract_thermo" not in config.dataset
+    if preset.endswith("smoke"):
+        assert (config.dataset.train_size, config.dataset.val_size, config.dataset.test_size) == (
+            128, 32, 32
+        )
+        assert config.dataset.subset_size == 192
+        assert "train_limit" not in config.dataset
+    else:
+        assert config.dataset.train_size == 110000
+        assert config.dataset.val_size == 10000
+        assert config.dataset.split_seed == 42

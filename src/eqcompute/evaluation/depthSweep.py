@@ -31,6 +31,8 @@ def _read_run(sweep_dir, job):
     checkpoint_path = run_dir / "checkpoints/best.pt"
     checkpoint = load_checkpoint(checkpoint_path)
     config, metadata = checkpoint["config"], checkpoint["metadata"]
+    if config["model"]["execution"].get("name", "fixed") != "fixed":
+        raise ValueError("Depth sweep summaries require fixed execution; use adaptive exports")
     depth, seed = config["model"]["execution"]["depth"], config["seed"]
     tying = config["model"]["weight_tying"]
     if (depth, seed, tying) != (job["depth"], job["seed"], job["weight_tying"]):

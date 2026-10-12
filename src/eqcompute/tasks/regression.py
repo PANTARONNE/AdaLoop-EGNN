@@ -7,9 +7,11 @@ from eqcompute.tasks.targetTransform import TargetTransform
 
 
 class RegressionTask:
+    supervision_modes = ("final", "all_steps")
+
     def __init__(self, config, target_index, unit, transform):
-        if config.supervision not in ("final", "all_steps"):
-            raise ValueError("supervision must be final or all_steps")
+        if config.supervision not in self.supervision_modes:
+            raise ValueError(f"supervision must be one of {self.supervision_modes}")
         if config.loss not in ("mae", "mse"):
             raise ValueError("loss must be mae or mse")
         self.config = config

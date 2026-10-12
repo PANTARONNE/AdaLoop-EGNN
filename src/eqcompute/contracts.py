@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import torch
 from torch import Tensor
@@ -46,3 +46,5 @@ class TaskResult:
     prediction: Tensor  # Original physical units, detached.
     target: Tensor
     num_graphs: int
+    # Per-graph means; None denotes an inapplicable statistic (e.g. warm-up entropy).
+    statistics: dict[str, float | None] = field(default_factory=dict)

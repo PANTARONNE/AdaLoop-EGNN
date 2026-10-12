@@ -1,0 +1,11 @@
+# @package _global_
+defaults:
+  - qm9_loop_egnn_orig
+  - _self_
+
+model:
+  execution:
+    depth: 12
+task:
+  supervision: all_steps
+  normalization: mad

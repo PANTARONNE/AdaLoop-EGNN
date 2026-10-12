@@ -1,11 +1,13 @@
 # Adaptive Equivariant Computation — Experiment 0
 
-当前仅实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测。
-不包含 adaptive halting、AdaLoop、计算惩罚、Oracle、QMugs、PaiNN 或晶体模型。
+当前实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测，
+以及基于 EGNNOrig 的单性质 AdaLoop（M0–M3）：逐深度诊断、Oracle、两阶段训练、
+计算惩罚和实际提前退出。默认 MAD，可通过配置切换。用法见 [AdaLoop 说明](docs/AdaLoopEGNN.md)。
+不包含多性质条件化、QMugs、PaiNN 或晶体模型。
 
-新增独立的官方 QM9 EGNN 复现入口：`experiment=qm9_egnn_orig`。
-模型为 `EGNNOrig.py`，离线 XYZ 预处理为 `QM9Orig.py`；采用每 epoch 结束后一次 cosine
-调度。数据准备、配置、单位和与官方脚本的差异见 [EGNNOrig 使用说明](docs/EGNNOrig.md)。
+EGNNOrig 骨架入口为 `experiment=qm9_egnn_orig`，与 Loop / AdaLoop 配置均直接使用
+本地 PyG QM9 缓存 `data/qm9/processed/data_v3.pt`，采用每 epoch 结束后一次 cosine
+调度。数据划分、标签单位和模型来源见 [EGNNOrig 使用说明](docs/EGNNOrig.md)。
 共享参数循环实验使用 `experiment=qm9_loop_egnn_orig`；多卡扫描指定 `--weight-tying true`。
 
 ## WSL 环境
@@ -336,5 +338,5 @@ pytest 覆盖：离线 batch/ID、split、目标变换、单步与 wrapper 一�
 trace、旋转/平移/反射/置换、批间隔离、空邻域、小图过拟合、checkpoint 恢复、逐深度导出。
 真实 QM9 子集的 GPU 验证记录另见 `VALIDATION.md`。
 
-后续 AdaLoop 可以增加 ExecutionPolicy 和相应 Task；PaiNN 可以增加自己的 state、step、readout。
-这些扩展无需将模型循环塞入 Trainer，但并不意味着当前已经实现这些方法。
+AdaLoop 通过独立 ExecutionPolicy 和 Task 实现；后续 PaiNN 可增加自己的 state、step、readout。
+模型循环仍在 execution 层，Trainer 只负责优化、阶段通知和统计。

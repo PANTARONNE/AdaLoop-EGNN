@@ -3,14 +3,15 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 from eqcompute.application import make_loader, resolve_device
+from eqcompute.evaluation.adaptiveWriter import write_adaptive_predictions
 from eqcompute.evaluation.predictionWriter import file_hash, write_predictions
 from eqcompute.factories import DATASETS, MODELS, TASKS, construct
 from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import load_checkpoint
 
 
-def predict_checkpoint(
-    checkpoint_path, split="test", device="auto", batch_size=None, overwrite=False
+def load_evaluation(
+    checkpoint_path, split="test", device="auto", batch_size=None
 ):
     if split not in ("train", "validation", "test"):
         raise ValueError("Unknown split")
@@ -28,6 +29,8 @@ def predict_checkpoint(
     )
     task.load_state_dict(checkpoint["task"])
     if batch_size is not None:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
         config.loader.batch_size = batch_size
     loader = make_loader(getattr(bundle, split), config.loader)
     provenance = {
@@ -40,6 +43,30 @@ def predict_checkpoint(
         "supervision": config.task.supervision,
         "seed": config.seed,
     }
+    return checkpoint_path, config, model, task, loader, device, provenance
+
+
+def predict_checkpoint(
+    checkpoint_path, split="test", device="auto", batch_size=None, overwrite=False, *, mode=None
+):
+    checkpoint_path, config, model, task, loader, device, provenance = load_evaluation(
+        checkpoint_path, split, device, batch_size
+    )
+    if config.model.execution.name == "adaptive":
+        mode = mode or "hard"
+        if mode not in ("hard", "diagnostic"):
+            raise ValueError("Adaptive prediction mode must be hard or diagnostic")
+        suffix = "adaptive" if mode == "hard" else "diagnostic_by_depth"
+        destination = (
+            checkpoint_path.parent.parent / "predictions"
+            / f"{split}_{checkpoint_path.stem}_{suffix}.csv"
+        )
+        count = write_adaptive_predictions(
+            model, task, loader, device, destination, provenance, overwrite, mode
+        )
+        return destination, count
+    if mode is not None:
+        raise ValueError("Explicit execution mode is only supported for adaptive checkpoints")
     destination = (
         checkpoint_path.parent.parent
         / "predictions"

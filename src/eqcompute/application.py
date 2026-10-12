@@ -69,10 +69,11 @@ def train(config):
         config.trainer.gradient_clip is not None and config.trainer.gradient_clip <= 0
     ) or config.loader.num_workers < 0:
         raise ValueError("Invalid gradient_clip or num_workers")
-    if config.model.name == "egnn_orig" and (
-        config.dataset.name != "qm9_orig" or config.task.supervision != "final"
-    ):
-        raise ValueError("EGNNOrig requires dataset=qm9_orig and task.supervision=final")
+    adaptive = config.model.execution.name == "adaptive"
+    if adaptive != (config.task.name == "adaptive_regression"):
+        raise ValueError("Adaptive execution and adaptive_regression must be used together")
+    if adaptive and config.task.warmup_epochs >= config.trainer.epochs:
+        raise ValueError("warmup_epochs must be less than trainer.epochs")
     # Construct and validate model before downloading data.
     model = construct(MODELS, config.model.name, config.model, config.task.target).to(device)
     config.dataset.root = str(Path(config.dataset.root).resolve())
@@ -102,6 +103,7 @@ def train(config):
     metadata = {
         "run_id": output_dir.name,
         "split_id": bundle.manifest["split_id"],
+        "dataset": bundle.manifest.get("dataset", config.dataset.name),
         "property": config.task.target,
         "unit": bundle.unit,
         "target_convention": bundle.manifest.get("target_convention", "raw"),

@@ -20,12 +20,25 @@ class TraceSpec:
 
 
 @dataclass
+class AdaptiveInfo:
+    mode: str
+    halt_depth: Tensor
+    executed_depth: Tensor
+    valid_depth_mask: Tensor
+    # Full distributions are unavailable after real early exit or during warm-up.
+    halting_probabilities: Tensor | None = None
+    stop_probabilities: Tensor | None = None
+    expected_depth: Tensor | None = None
+
+
+@dataclass
 class ModelOutput:
     prediction: Tensor
     # These stay differentiable when used by the Task for all-step supervision.
     predictions_by_depth: dict[int, Tensor] = field(default_factory=dict)
     # Analysis snapshots are detached copies on CPU, never used for the loss.
     trace: dict[int, dict[str, Tensor]] = field(default_factory=dict)
+    adaptive: AdaptiveInfo | None = None
 
 
 def snapshot(tensor):

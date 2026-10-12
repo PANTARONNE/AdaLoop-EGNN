@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - override /dataset: qm9_orig
+  - override /dataset: qm9
   - override /model: egnn_orig
   - override /optimizer: adam
   - override /trainer: egnn_orig

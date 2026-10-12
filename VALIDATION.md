@@ -1,4 +1,79 @@
-# Experiment 0 验证记录
+# 验证记录
+
+**2026-10-12：训练默认切换到本地 PyG QM9**
+
+按用户要求，直接修改原配置的继承链；固定 EGNNOrig、Loop、M0 诊断和 AdaLoop
+统一默认 dataset=qm9、root=data/qm9。保留 MAD 和配置切换能力，不建立 qm9_orig 备份配置。
+正式 train() 解除骨架与 XYZ 数据协议的绑定；smoke 使用同一入口，不再单独组装 Trainer。
+PyG 标签保持原始目标语义，不额外扣原子参考值；metadata 记录 dataset=qm9_pyg、raw 目标和单位。
+
+验收：116 passed、1 skipped，Ruff 检查通过。新增配置检查覆盖全部五个入口，
+小型端到端测试覆盖 PyG 数据分组、MAD/standard、checkpoint 加载及 hard/diagnostic 导出。
+旧 XYZ 适配器的离线正确性测试仍通过；跳过项仍为未设置 QM9_ROOT 的已有 integration 测试。
+
+再次通过正式 train() 完成 CUDA 本地真实数据 smoke：128/32/32 个分子，mu、MAD、
+Kmax=4，3 epochs（1 warm-up + 2 adaptive）。Validation MAE=1.2337818108 D，
+Test MAE=0.9804102145 D，RMSE=1.2473613851 D。full/hard 停止深度一致率 100%，
+最大标准化预测差异 2.3841857910e-7；node-steps=2276/569，edge-steps=39632/9908。
+短程模型全部在第 1 步停止，结果用于链路验收，不作正式性能结论。
+
+运行目录：`outputs/qm9_mu_adaloop_orig_k4_lambda0.03_s0__20261012T090115_32b0a866/`。
+该目录包含正式入口产生的 config/metadata/split/checkpoint、预测及 smoke_summary.json。
+
+以下是切换前的历史验收记录。
+
+**2026-10-12：单性质 AdaLoop（M0–M3）**
+
+范围：M0 只做代码和验收测试，不启动完整诊断实验；M1–M3 完成实现、测试及一次本地
+真实数据短程 smoke。EGNNOrig 消息传播代码不变，默认 MAD，配置切换 standard 已测试。
+完整用法见 [AdaLoopEGNN.md](docs/AdaLoopEGNN.md)。
+
+最终执行：
+
+```bash
+python -m pytest -q
+python -m ruff check src tests scripts
+python scripts/smokeAdaLoop.py --device auto
+```
+
+结果：**111 passed、1 skipped、0 failed**；Ruff 全部通过，`git diff --check` 无空白错误。
+跳过项是已有真实 QM9 数据检查，因为本次 pytest 未设置 `QM9_ROOT`；独立真实数据 smoke
+已实际完成。PyG 的 distributed 弃用提示仍存在。新增验收覆盖：
+
+- Orig all_steps 诊断及 MAD / standard 配置，从训练到 checkpoint 再到导出。
+- 停止分布边界、末步剩余质量、手算逐样本期望损失、梯度与 controller 参数注册。
+- warm-up 不更新 controller、随机深度覆盖、切换到 adaptive 后更新。
+- warm-up 无 best.pt 时的恢复，以及 adaptive 阶段恢复，与连续 CPU 训练逐位一致。
+- 旋转、平移、反射、节点置换及批间隔离。
+- CPU/CUDA 上非连续图提前退出、节点/边重编号、原始顺序回填。
+- 构造分子分别在第 1/2/4 步停止时，后续实际进入 step 的节点/边数量减少。
+- full 与 hard 输出一致、模式不会相互污染、单节点与 Kmax=1 边界。
+- Oracle 的尺度、平局、惩罚、哈希、缺失/重复深度及整套 split 样本覆盖。
+- 原有固定深度结果可继续汇总，自适应 checkpoint 不会被误报为固定深度结果。
+
+真实数据 smoke 使用用户确认的本地 **PyG QM9** 缓存；它不是 Orig XYZ/原子参考值/划分
+协议的研究实验。`mu`，训练/验证/测试 128/32/32 个分子，hidden_dim=32，Kmax=4，
+3 epochs（1 warm-up + 2 adaptive），lambda=0.03，CDF threshold=0.5，MAD，CUDA。
+
+| 指标 | 结果 |
+|---|---:|
+| Validation MAE | 1.2364565842 D |
+| Test MAE | 0.9851845838 D |
+| Test RMSE | 1.2444310733 D |
+| full / hard 停止深度一致率 | 100% |
+| full / hard 最大标准化预测差异 | 1.1920928955e-7 |
+| 平均 hard 深度 | 1.0 |
+| full / hard node-steps | 2276 / 569 |
+| full / hard edge-steps | 39632 / 9908 |
+
+该短程模型全部在首步停止，仅证明链路、数值一致性和实际计算跳过行为。
+不据此声称已学到样本相关深度、达到基准精度或获得实测延迟提升。
+批内不同停止时间的压缩由专门的 CPU/CUDA 构造测试覆盖。
+
+运行目录：`outputs/adaloop_pyg_mu_smoke__20261012T045526_25e4826f/`，包含 config、metadata、
+split IDs、metrics、best/last checkpoint、hard/diagnostic 预测及 `smoke_summary.json`。
+
+**以下为原 Experiment 0 历史验收记录。**
 
 验证日期：2026-10-06。范围为软件正确性与真实 QM9 小规模端到端运行。
 没有执行完整数据集训练或正式多 seed depth sweep；下面的误差不能用于研究结论。

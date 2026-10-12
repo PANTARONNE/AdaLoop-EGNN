@@ -72,6 +72,19 @@ def no_inference(*args, **kwargs):
     pytest.fail("A matching complete prediction cache must not trigger inference")
 
 
+def test_adaptive_checkpoint_is_not_reported_as_fixed(tmp_path, monkeypatch, capsys):
+    job, run, _ = make_run(tmp_path, 2, 0, 1.0)
+    path = run / "checkpoints/best.pt"
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["config"]["model"]["execution"]["name"] = "adaptive"
+    torch.save(checkpoint, path)
+    write_jobs(tmp_path, [job])
+    monkeypatch.setattr(depthSweep, "predict_checkpoint", no_inference)
+    _, skipped = depthSweep.summarize_sweep(tmp_path)
+    assert skipped == 1
+    assert "require fixed execution" in capsys.readouterr().err
+
+
 def test_paired_seed_statistics_use_best_checkpoint_and_final_depth(tmp_path, monkeypatch):
     a, _, _ = make_run(tmp_path, 2, 0, 1.0, (0.0, 2.0))
     b, _, _ = make_run(tmp_path, 2, 1, 3.0, (4.0, 6.0))

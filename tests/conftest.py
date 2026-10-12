@@ -41,3 +41,16 @@ def samples():
 @pytest.fixture
 def batch(samples):
     return collate_molecules(samples)
+
+
+@pytest.fixture
+def adaptive_config():
+    directory = str(Path(__file__).resolve().parents[1] / "configs")
+    with initialize_config_dir(config_dir=directory, version_base="1.3"):
+        config = compose(config_name="config", overrides=[
+            "experiment=qm9_adaloop_egnn_orig_smoke",
+        ])
+    config.model.hidden_dim = 8
+    config.model.halting.hidden_dim = 8
+    config.trainer.device = "cpu"
+    return config

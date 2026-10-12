@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+  - qm9_adaloop_egnn_orig
+  - _self_
+
+model:
+  hidden_dim: 32
+  execution:
+    depth: 4
+  halting:
+    hidden_dim: 16
+task:
+  warmup_epochs: 1
+trainer:
+  epochs: 3
+loader:
+  batch_size: 16
+dataset:
+  train_size: 128
+  val_size: 32
+  test_size: 32
+  subset_size: 192

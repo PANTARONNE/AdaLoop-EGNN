@@ -30,10 +30,53 @@ from eqcompute.training.checkpoint import load_checkpoint
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("normalization", ["mad", "standard"])
+@pytest.mark.parametrize("preset", [
+    "qm9_loop_egnn_orig_diagnostic", "qm9_adaloop_egnn_orig_smoke",
+])
+def test_pyg_presets_train_and_predict(samples, tmp_path, monkeypatch, normalization, preset):
+    with initialize_config_dir(config_dir=str(ROOT / "configs"), version_base="1.3"):
+        config = compose(config_name="config", overrides=[f"experiment={preset}"])
+    assert config.dataset.name == "qm9"
+    config.dataset.root = str(tmp_path / "local_qm9")
+    config.dataset.train_size, config.dataset.val_size = 2, 1
+    config.dataset.test_size, config.dataset.subset_size = 1, 4
+    source = [sample.clone() for sample in samples]
+    for index, sample in enumerate(source):
+        sample.idx = index
+    monkeypatch.setattr("eqcompute.data.QM9.QM9", lambda root: source)
+    config.output_root = str(tmp_path / "runs")
+    config.trainer.device = "cpu"
+    config.trainer.epochs = 2
+    config.loader.batch_size = 4
+    config.model.hidden_dim = 8
+    config.model.execution.depth = 3
+    config.task.normalization = normalization
+    output = train(config)
+    checkpoint = load_checkpoint(output / "checkpoints/best.pt")
+    assert checkpoint["config"]["task"]["normalization"] == normalization
+    assert checkpoint["metadata"]["dataset"] == "qm9_pyg"
+    assert checkpoint["metadata"]["target_convention"] == "raw"
+    assert checkpoint["metadata"]["split_id"]
+    assert checkpoint["task"]["unit"] == "D"
+    path, count = predict_checkpoint(output / "checkpoints/best.pt", device="cpu")
+    adaptive = config.model.execution.name == "adaptive"
+    assert count == (1 if adaptive else 3)
+    assert path.name == ("test_best_adaptive.csv" if adaptive else "test_best_by_depth.csv")
+    if adaptive:
+        path, count = predict_checkpoint(
+            output / "checkpoints/best.pt", device="cpu", mode="diagnostic"
+        )
+        assert count == 3
+        assert path.name == "test_best_diagnostic_by_depth.csv"
+
+
 @pytest.fixture
 def orig_config():
     with initialize_config_dir(config_dir=str(ROOT / "configs"), version_base="1.3"):
-        return compose(config_name="config", overrides=["experiment=qm9_egnn_orig"])
+        return compose(config_name="config", overrides=[
+            "experiment=qm9_egnn_orig", "dataset=qm9_orig",
+        ])
 
 
 def reference_class(monkeypatch):
@@ -279,6 +322,8 @@ def test_train_only_mad():
 def test_original_config_and_sweep_plan(preset, tied):
     with initialize_config_dir(config_dir=str(ROOT / "configs"), version_base="1.3"):
         preset_config = compose(config_name="config", overrides=[f"experiment={preset}"])
+    assert preset_config.dataset.name == "qm9"
+    assert preset_config.dataset.root == "data/qm9"
     assert preset_config.model.weight_tying is tied
     assert preset_config.model.execution.depth == 7
     assert f"tied{tied}_k7_final" in preset_config.experiment_name

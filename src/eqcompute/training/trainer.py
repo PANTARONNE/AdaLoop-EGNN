@@ -1,5 +1,6 @@
 import csv
 import logging
+import math
 import shutil
 from pathlib import Path
 
@@ -71,12 +72,14 @@ class Trainer:
         self.best_value = checkpoint["best_value"]
         destination = self.output_dir / "checkpoints"
         destination.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path.with_name("best.pt"), destination / "best.pt")
+        if math.isfinite(self.best_value):
+            shutil.copy2(path.with_name("best.pt"), destination / "best.pt")
 
     def _epoch(self, loader, training):
         self.model.train(training)
         metric = self.metric_factory()
         total_loss, count = 0.0, 0
+        statistics, statistic_counts = {}, {}
         with torch.set_grad_enabled(training):
             for batch in loader:
                 batch = batch.to(self.device)
@@ -96,7 +99,19 @@ class Trainer:
                 total_loss += result.loss.item() * result.num_graphs
                 count += result.num_graphs
                 metric.update(result.prediction, result.target)
-        return {"loss": total_loss / count, **metric.compute()}
+                for key, value in result.statistics.items():
+                    statistics.setdefault(key, 0.0)
+                    statistic_counts.setdefault(key, 0)
+                    if value is not None:
+                        if not math.isfinite(value):
+                            raise FloatingPointError(f"Non-finite task statistic: {key}")
+                        statistics[key] += value * result.num_graphs
+                        statistic_counts[key] += result.num_graphs
+        return {
+            "loss": total_loss / count, **metric.compute(),
+            **{key: value / statistic_counts[key] if statistic_counts[key] else None
+               for key, value in statistics.items()},
+        }
 
     def fit(self, train_loader, validation_loader, epochs):
         if epochs <= self.start_epoch:
@@ -104,10 +119,16 @@ class Trainer:
         if self.scheduler is not None and epochs > self.scheduler.T_max:
             raise ValueError("epochs must not exceed the fixed cosine scheduler.t_max")
         for epoch in range(self.start_epoch, epochs):
+            if hasattr(self.task, "on_epoch_start"):
+                self.task.on_epoch_start(self.model, epoch)
             learning_rate = self.optimizer.param_groups[0]["lr"]
             train = self._epoch(train_loader, True)
             validation = self._epoch(validation_loader, False)
-            improved = validation["mae"] < self.best_value
+            eligible = (
+                self.task.checkpoint_eligible(epoch)
+                if hasattr(self.task, "checkpoint_eligible") else True
+            )
+            improved = eligible and validation["mae"] < self.best_value
             if improved:
                 self.best_value = validation["mae"]
             # Exactly once per completed epoch, after optimization and validation.
