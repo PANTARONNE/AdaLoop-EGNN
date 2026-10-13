@@ -318,6 +318,78 @@ Val/Test 只汇总同一组成功评估的 seed，`Seeds` 显示有效数/计划
 表格写入 stdout，可用 `> summary.txt` 保存；全部成功退出码为 0，有跳过任务为 1，
 输入配置错误为 2。测试集结果用于报告，深度与超参数选择仍依据验证集。
 
+## 分子复杂度与深度分析
+
+对单次 AdaLoop 训练目录，一条命令完成完整轨迹导出、五种复杂度统计、两种 Oracle 和模型停止深度分析。
+必须存在 `checkpoints/best.pt` 与 `split_ids.json`，仅支持 adaptive checkpoint；
+不会回退到可能仍在 warm-up 的 `last.pt`。数据集需在 checkpoint 保存的位置可访问，
+例如 WSL 训练得到的路径应在相同 WSL 环境执行。
+
+先用验证集探索并固定分析设置，再用测试集生成最终报告图：
+
+```bash
+python scripts/depthComplexity.py --run-dir outputs/<run>
+python scripts/depthComplexity.py --run-dir outputs/<run> --split test
+```
+
+可选 `--device auto|cpu|cuda:0`、`--batch-size 96`、`--lambda-oracle 0.03`。
+默认 split 为 validation，batch size 沿用训练配置，
+lambda_oracle 默认读取 checkpoint 的 lambda_compute，显式传 0 可关闭 Oracle 成本项。
+
+预测复用 `predictions/<split>_best_diagnostic_by_depth.csv`。
+分析输出至 `analysis/depth_complexity/<split>/`：
+
+- `complexity.csv`：每个分子的全部五种复杂度。
+- `oracle.csv`：现有 Oracle 格式，误差为按训练集 scale 归一化的绝对误差。
+- `depth_complexity.csv`：每个分子一行，三种深度、全部复杂度及来源信息。
+- `summary.json`：样本数、各深度频数和占比、不同深度数量、两两一致率及输入哈希。
+
+默认检查并复用有效结果，补齐缺失产物，不重复推理。来源不符、内容不完整或
+lambda_oracle 改变时会报错；使用 `--overwrite` 重新生成当前划分的预测和分析结果。
+不会修改其他划分的数据。终端打印统计摘要和输出位置。
+
+绘图独立执行，只读取分析 CSV，无需模型、PyTorch 或数据集：
+
+```bash
+python plot/depthComplexity.py \
+  --input outputs/<run>/analysis/depth_complexity/test/depth_complexity.csv \
+  --complexity all \
+  --output-dir outputs/<run>/analysis/depth_complexity/test/figures
+```
+
+`--complexity` 支持以下指标，默认 all 分别生成五张图：
+
+| 指标 | 含义 |
+|---|---|
+| atom_count | 包括氢的总原子数 |
+| heavy_atom_count | 重原子数（原子序数大于 1） |
+| radius_gyration | 等权几何中心回转半径，单位 Å，不做质量加权 |
+| element_count | 元素种类数 |
+| element_entropy | 元素组成熵，使用自然对数 |
+
+每张图包含所有分子，纵轴为 Depth，三类散点固定如下：
+
+| 类型 | 定义 | 颜色 | 点形 |
+|---|---|---|---|
+| oracle_depth | 最小绝对预测误差对应深度 | #C30078 | 圆形 |
+| cost_oracle_depth | 最小归一化误差 + lambda_oracle × k/Kmax 对应深度 | #4370B4 | 三角形 |
+| halt_depth | 控制器按保存的 CDF 阈值选择的停止深度 | #529F9A | 方形 |
+
+Oracle 平局选择最浅深度。halt_depth 不等于 diagnostic 模式下恒为 Kmax 的 executed_depth。
+三种定义可能相同，结果不预设分子之间一定存在差异。散点图仅检验这个 checkpoint、
+这个预测性质下的深度差异，不能证明复杂度与最优深度有因果关系。
+Oracle 使用真实标签，仅用于离线分析，不用于部署推理或测试集调参。
+
+默认使用小点、透明度及仅在显示层生效的扰动：离散横轴 ±0.18，纵轴 ±0.04，
+三类纵坐标偏移分别为 −0.18、0、+0.18。按 sample_id 排序，同一分子共用随机扰动；
+`--jitter-seed` 默认 42；`--no-jitter` 关闭所有抖动和类别错位。
+CSV、统计及整数刻度不受影响。图中仅保留坐标轴、刻度和图例，移除标题及下方说明，所有文字使用 Arial。
+
+每个指标同时输出 `depth_complexity_<metric>.svg` 和 `.png`。
+SVG 保留矢量散点及可编辑文字，PNG 为 300 DPI；不输出 PDF，不抽样，不添加拟合线。
+绘图需要 Arial 字体；WSL 下自动读取 Windows 的 Arial，无需复制字体文件。
+颜色指定值为散点基础色，透明度叠加后的显示颜色随背景和重合情况变化。
+
 ## 恢复训练
 
 ```bash
