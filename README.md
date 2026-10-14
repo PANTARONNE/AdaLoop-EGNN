@@ -390,6 +390,64 @@ SVG 保留矢量散点及可编辑文字，PNG 为 300 DPI；不输出 PDF，不
 绘图需要 Arial 字体；WSL 下自动读取 Windows 的 Arial，无需复制字体文件。
 颜色指定值为散点基础色，透明度叠加后的显示颜色随背景和重合情况变化。
 
+### 深度分布比例直方图
+
+直接读取上述分析 CSV，将三种深度绘制为上中下三个直方图：
+
+```bash
+python plot/depthDistribution.py \
+  --input outputs/<run>/analysis/depth_complexity/validation/depth_complexity.csv \
+  --output-dir outputs/<run>/analysis/depth_complexity/validation/figures
+
+# 也可以使用单独保存的分析表
+python plot/depthDistribution.py --input outputs/depth_complexity.csv --output-dir outputs/figures
+```
+
+横轴为 1…Kmax 的整数深度，每个整数对应宽度为 1 的区间；
+纵轴为该深度分子数占总分子数的比例，以百分比显示。
+每种深度分别归一化为 100%，不将三种类型合并为一个分母；零频数深度仍保留。
+上、中、下依次为 Error-optimal depth、Cost-optimal depth、Model halt depth；共享横轴范围和刻度；各子图纵轴上限为严格高于最高柱比例的最小整十百分比。
+柱体透明度为 0.55，使用同色边框，颜色及 Arial 字体沿用复杂度散点图。
+各子图右上角放置单项图例，仅底部显示横轴刻度文字及 Depth 标签；各子图显示百分比纵轴。
+画布为 8.5 × 9 英寸，三个子图上下相连无间隙；坐标轴标签及刻度字号为 14.4，图例字号为 12.96（在上一版基础上再放大 20%）。
+无标题和下方说明，不添加抖动或类别错位。
+输出 `depth_distribution.svg`（矢量图形、可编辑文字）与
+`depth_distribution.png`（300 DPI）。无需重新推理，不按分子复杂度分组或筛选样本。
+
+### 相邻深度预测误差变差比例
+
+从训练目录读取 adaptive `checkpoints/best.pt` 和保存的划分，复用或生成完整 diagnostic 预测：
+
+```bash
+python scripts/depthWorsening.py --run-dir outputs/<run>
+python scripts/depthWorsening.py --run-dir outputs/<run> --split test
+
+python plot/depthWorsening.py \
+  --input outputs/<run>/analysis/depth_worsening/validation/depth_worsening.csv \
+  --output-dir outputs/<run>/analysis/depth_worsening/validation/figures
+```
+
+分析默认使用 validation；`--device auto`、未指定的 `--batch-size` 沿用已有推理配置。
+缺失 best.pt 不回退 last.pt；Kmax 必须至少为 2。有效预测缓存直接复用，缺失分析产物自动补齐，
+缓存来源或内容不符时明确报错；`--overwrite` 重新生成当前划分的预测和分析结果。
+输出 `analysis/depth_worsening/<split>/depth_worsening.csv` 及 `summary.json`，
+记录每对相邻深度的总样本数、变差/持平/改善数量、变差比例、分析口径和来源哈希。
+独立绘图只需分析 CSV，无需模型、数据集或重新推理。
+
+对每个分子用原始单位的绝对误差 $e_{i,k}=|\hat y_{i,k}-y_i|$，统计
+$r_k=\frac{1}{N}\sum_{i=1}^{N}\mathbf{1}[e_{i,k+1}>e_{i,k}]$。
+严格大于才算变差，持平不计入，不引入容差；每层分母都是全部 N 个分子，包括已停止的分子。
+横轴 k 表示从 k 到 k+1 的变化，只显示 1…Kmax−1，各柱比例独立，合计不要求为 100%。
+这描述单分子误差变差的发生比例，不等于整体 MAE 的变化幅度，也不使用成本惩罚。
+仅含 optimal/halt depth 的 `depth_complexity.csv` 无法恢复这些逐深度比较。
+
+使用一次批量直方图调用，区间为 [k−0.5, k+0.5)，保留零比例深度，无抖动。
+纵轴以百分比显示，上限为严格高于最大柱高的最小整十百分比（最高柱 100% 时为 110%）。
+颜色 `#4370B4`，透明度 0.55，同色边框线宽 0.8；Arial 字号 14.4，
+画布 8.5 × 6 英寸，无标题、图下注释或图例。
+输出 `depth_worsening.svg`（矢量柱体、可编辑文字）及 `depth_worsening.png`（300 DPI）。
+验证集用于探索，固定分析设置后使用测试集绘制最终报告，不根据测试结果调整停止策略。
+
 ## 恢复训练
 
 ```bash

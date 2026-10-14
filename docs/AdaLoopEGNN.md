@@ -24,20 +24,142 @@
 PyG 标签直接读取，不额外扣除原子参考值；zpve 为 eV，U0 是总能量目标。
 `qm9_egnn_orig` 和 `qm9_loop_egnn_orig` 仍默认 final 监督。
 
-**训练与停止语义**
+**Halting Controller 设计**
 
-Controller 输入每图的节点特征均值、总体标准差和相邻步特征变化范数均值；
-不输入坐标、标签、Oracle 或人工复杂度指标。`model.halting.use_delta=false`
-仅去掉 controller 的变化量输入，保留骨架的残差连接。
+设分子图 $b$ 有 $N_b$ 个节点，最大展开深度为 $K=K_{\max}$，第 $k$ 步节点特征为
+$h_{b,i}^{(k)}\in\mathbb{R}^{d}$。$h^{(0)}$ 是 initializer 输出；每一步先执行共享的
+`EGNNOrigStep`，再由共享 readout/head 得到该深度的归一化预测 $\hat y_{b,k}$，
+同时由 controller 判断是否停止。消息传播、readout/head 和 controller 的参数均跨深度共享，
+controller 不显式输入深度 $k$。
 
-`q_k` 是条件停止概率，`p_k=q_k*prod(1-q_j, j<k)` 是停止质量。
-最后一步强制停止并接收所有剩余质量。损失对每样本、每深度先计算 MAE，再用 p 加权：
+Controller 在每个图内计算以下统计量：
+
+$$
+\mu_{b,k}=\frac{1}{N_b}\sum_i h_{b,i}^{(k)},\qquad
+\sigma_{b,k}=\sqrt{\frac{1}{N_b}\sum_i
+\left(h_{b,i}^{(k)}-\mu_{b,k}\right)^{\odot 2}+\epsilon},
+$$
+
+$$
+\delta_{b,k}=\frac{1}{N_b}\sum_i
+\left\|h_{b,i}^{(k)}-h_{b,i}^{(k-1)}\right\|_2,\qquad
+z_{b,k}=[\mu_{b,k};\sigma_{b,k};\delta_{b,k}].
+$$
+
+均值和标准差均为 $d$ 维向量；$\odot 2$ 表示逐特征维平方。标准差使用总体方差
+（分母为 $N_b$，无无偏修正），$\epsilon=10^{-8}$，因此单节点图也能得到有限值。
+变化量 $\delta_{b,k}$ 是“各节点变化向量的 L2 范数再取均值”，为一个标量，
+用于提供相邻步更新幅度信息，并不直接证明预测已收敛。
+
+图级统计量输入两层 MLP，输出条件停止概率：
+
+$$
+q_{b,k}=\operatorname{sigmoid}
+\left(W_2\,\operatorname{SiLU}(W_1z_{b,k}+a_1)+a_2\right).
+$$
+
+| 项目 | 当前设计 |
+|---|---|
+| 输入维度 | 启用 delta 时为 $2d+1$，关闭时为 $2d$ |
+| 网络结构 | `Linear(input_dim, controller_dim) → SiLU → Linear(controller_dim, 1) → Sigmoid` |
+| 默认维度 | `model.hidden_dim=128`，`model.halting.hidden_dim=64`，即 `257 → 64 → 1` |
+| 输出 | 每个图一个标量 $q_{b,k}$；batch 中各图分别计算 |
+| delta 消融 | `model.halting.use_delta=false` 仅移除变化量输入，保留骨架残差连接 |
+
+Controller 不输入原始坐标、标签、Oracle、性质 embedding 或人工复杂度指标。
+这些统计量对节点排列不变；由于当前骨架以原子特征和相对距离构造标量隐藏特征，
+停止决策也保持对整体平移、旋转和反射的不变性。几何信息可经骨架隐藏特征间接影响决策。
+
+$q_{b,k}$ 表示“已执行到第 $k$ 步且此前未停止”条件下的停止概率，
+不是直接对所有深度做 softmax。设 $S_{b,k}$ 为到达第 $k$ 步的剩余概率质量，则：
+
+$$
+S_{b,1}=1,\qquad
+p_{b,k}=S_{b,k}q_{b,k},\quad
+S_{b,k+1}=S_{b,k}(1-q_{b,k})\quad (k<K),
+$$
+
+$$
+p_{b,K}=S_{b,K}=\prod_{j=1}^{K-1}(1-q_{b,j}).
+$$
+
+因此 $p_{b,k}$ 是恰好在第 $k$ 步停止的概率，满足 $p_{b,k}\geq 0$、
+$\sum_{k=1}^{K}p_{b,k}=1$。末步直接设 $q_{b,K}=1$ 并接收全部剩余质量，
+不调用 controller 学习末步停止概率；$K=1$ 时退化为 $p_{b,1}=1$。
+例如 $q=(0.2,0.5,1)$ 对应 $p=(0.2,0.4,0.4)$。
+
+实现见 [HaltingController 与停止分布](../src/eqcompute/models/halting.py)、
+[AdaptiveExecution](../src/eqcompute/models/adaptiveExecution.py)。
+
+**Loss 设计**
+
+训练目标是在预测误差与期望展开深度之间做权衡。标签先转换为
+$\tilde y_b=(y_b-m)/s$，其中 $m$、$s$ 仅在训练集拟合。默认 `mad` 使用训练均值 $m$
+和平均绝对偏差 $s=\operatorname{mean}_{\mathrm{train}}|y-m|$
+（这里不是中位数绝对偏差）；`standard` 使用总体标准差，二者的 scale 均下限截断为
+$10^{-8}$；`none` 使用 $m=0,s=1$。所有深度的 $\hat y_{b,k}$ 都在同一标签尺度上监督，
+报告 MAE 时再将所选预测还原到原目标单位。
+
+对于含 $B$ 个分子的 batch，默认 `task.loss=mae`：
+
+$$
+\ell_{b,k}=|\hat y_{b,k}-\tilde y_b|,\qquad
+\mathcal{L}_{\mathrm{prediction}}
+=\frac{1}{B}\sum_{b=1}^{B}\sum_{k=1}^{K}p_{b,k}\ell_{b,k},
+$$
+
+$$
+\mathcal{L}_{\mathrm{compute}}
+=\frac{1}{B}\sum_{b=1}^{B}\sum_{k=1}^{K}p_{b,k}\frac{k}{K}
+=\frac{1}{BK}\sum_{b=1}^{B}\mathbb{E}_{p_b}[D_b],
+$$
+
+$$
+\mathcal{L}
+=\mathcal{L}_{\mathrm{prediction}}
++\lambda_{\mathrm{compute}}\mathcal{L}_{\mathrm{compute}}.
+$$
+
+其中 $D_b\in\{1,\ldots,K\}$ 为停止深度随机变量。
+`task.loss=mse` 时仅将 $\ell_{b,k}$ 换为平方误差，停止分布和成本项保持相同定义。
+单性质预测张量形状为 `[B,K,1]`，标签为 `[B,1]`，停止质量为 `[B,K]`；
+实现先计算每个样本、每个深度的误差，再沿深度按 $p$ 加权，最后沿 batch 求均值：
 
 ```text
 prediction_loss = mean_b sum_k p[b,k] * abs(y_k[b]-normalized_target[b])
 compute_loss = mean_b sum_k p[b,k] * k/Kmax
 loss = prediction_loss + lambda_compute*compute_loss
 ```
+
+这里优化的是停止分布下的**期望误差**，不是先混合预测再计算误差
+$|\sum_k p_{b,k}\hat y_{b,k}-\tilde y_b|$。例如目标为 2、两步预测为 0 和 4、
+停止质量各为 0.5 时，期望 MAE 为 2，而混合预测的 MAE 为 0；
+后者可能通过不同深度误差抵消，无法反映实际选择某一步输出时的误差。
+
+成本项取值在 $[1/K,1]$，是归一化期望深度代理，不是实测 FLOPs、节点/边操作数或延迟。
+默认 $\lambda_{\mathrm{compute}}=0.03$，可配置为任意有限非负值；增大它会加强浅层停止的
+优化压力，实际停止深度还取决于各步误差和模型训练结果。标签归一化会影响误差项与成本项的
+相对尺度，因此比较不同实验时需统一 normalization 和 lambda。
+
+自适应阶段完整展开到 $K$，不采样离散停止深度，也不通过 CDF 阈值选择反向传播。
+$\hat y_{b,k}$ 与 $p_{b,k}$ 都保留计算图：预测项训练 backbone/readout/head，
+并通过停止质量训练 controller；成本项通过停止质量训练 controller，也经图统计量
+反传到 backbone。Controller 学习在“当前预测误差加深度成本”与继续计算的期望收益之间
+分配停止质量，无需 Oracle 停止标签或 REINFORCE。当前目标没有额外的熵正则或
+Oracle 监督；`halting_entropy` 仅作为日志指标。
+
+Warm-up 阶段每个 batch 均匀抽取一个深度 $k^\star\sim\mathrm{Uniform}\{1,\ldots,K\}$，
+整个 batch 执行到该深度，使用
+$\mathcal{L}_{\mathrm{warmup}}=\frac{1}{B}\sum_b\ell_{b,k^\star}$。
+此时不调用 controller、不加入 compute loss，仅训练共享 backbone/readout/head，
+使其在不同深度都能输出预测；进入自适应阶段后再联合学习停止策略。
+Validation 始终使用 `full` 模式计算上述自适应 loss，包括 warm-up 期间的 validation。
+
+实现见 [adaptive_loss 与训练阶段](../src/eqcompute/tasks/adaptiveRegression.py)、
+[标签变换](../src/eqcompute/tasks/targetTransform.py)；
+[手算损失与梯度测试](../tests/testHalting.py) 验证停止质量、逐样本加权和梯度。
+
+**训练与停止语义**
 
 默认 1000 epochs 中前 200 epochs 为 warm-up，每 batch 均匀抽一个深度，只监督该深度。
 后续完整展开到 Kmax，联合训练 controller。训练过程不声称节省消息传播计算。

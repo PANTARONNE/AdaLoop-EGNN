@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from eqcompute.analysis import depthComplexity as analysis
+from eqcompute.analysis import depthWorsening, diagnostic
 from eqcompute.application import make_loader, train
 from eqcompute.data.QM9 import DatasetBundle
 from eqcompute.evaluation.adaptiveWriter import DIAGNOSTIC_FIELDS
@@ -86,7 +87,7 @@ def run_fixture(tmp_path, monkeypatch, samples, adaptive_config):
             {"split_id": "fixture-split", "split": split},
         )
 
-    monkeypatch.setattr(analysis, "predict_checkpoint", predict)
+    monkeypatch.setattr(diagnostic, "predict_checkpoint", predict)
     monkeypatch.setattr(analysis, "load_evaluation", load)
     return run, calls
 
@@ -297,6 +298,9 @@ def test_real_training_directory_end_to_end(adaptive_config, samples, tmp_path, 
     monkeypatch.setitem(DATASETS, "qm9", lambda *args: bundle)
     run = train(config)
     for split in ("validation", "test"):
+        result = depthWorsening.analyze_run(run, split=split, device="cpu")
+        assert result["sample_count"] == 1
+        assert len(result["transitions"]) == config.model.execution.depth - 1
         assert cli["main"](["--run-dir", str(run), "--split", split, "--device", "cpu"]) == 0
         output = run / "analysis/depth_complexity" / split
         assert all((output / name).is_file() for name in (
@@ -310,5 +314,123 @@ def test_real_training_directory_end_to_end(adaptive_config, samples, tmp_path, 
     def forbidden(*args, **kwargs):
         pytest.fail("Complete caches must not load a dataset or run inference")
     monkeypatch.setattr(analysis, "load_evaluation", forbidden)
-    monkeypatch.setattr(analysis, "predict_checkpoint", forbidden)
+    monkeypatch.setattr(diagnostic, "predict_checkpoint", forbidden)
     analysis.analyze_run(run)
+
+
+@pytest.fixture
+def distribution_plot(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "plot"))
+    return runpy.run_path(str(ROOT / "plot/depthDistribution.py"))
+
+
+def test_depth_histogram_proportions_and_panels(run_fixture, distribution_plot):
+    import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
+
+    run, _ = run_fixture
+    summary = analysis.analyze_run(run)
+    source = run / "analysis/depth_complexity/validation/depth_complexity.csv"
+    metadata, columns = distribution_plot["read_table"](source)
+    before = {key: value.copy() for key, value in columns.items()}
+    fig, axes = distribution_plot["make_figure"](metadata, columns)
+    try:
+        assert not fig.texts and len(axes) == 3
+        assert [ax.get_xlabel() for ax in axes] == ["", "", "Depth"]
+        assert axes[0].get_position().y0 > axes[1].get_position().y0
+        assert axes[1].get_position().y0 > axes[2].get_position().y0
+        fig.canvas.draw()
+        for ax, (key, label, color, *_) in zip(
+            axes, distribution_plot["SERIES"], strict=True
+        ):
+            assert not ax.get_title()
+            assert ax.get_ylabel() == "Molecule proportion"
+            assert ax.get_shared_x_axes().joined(ax, axes[-1])
+            assert ax.get_xlim() == axes[-1].get_xlim()
+            expected_upper = 1.1 if key == "cost_oracle_depth" else 0.6
+            assert ax.get_ylim() == pytest.approx((0, expected_upper))
+            np.testing.assert_allclose(
+                ax.get_yticks(), np.arange(round(expected_upper * 10) + 1) / 10,
+            )
+            np.testing.assert_array_equal(ax.get_xticks(), [1, 2, 3])
+            assert len(ax.containers) == 1
+            assert [text.get_text() for text in ax.get_legend().get_texts()] == [label]
+            container = ax.containers[0]
+            heights = np.array([patch.get_height() for patch in container])
+            expected = [summary["depths"][key]["proportions"][str(k)] for k in (1, 2, 3)]
+            np.testing.assert_allclose(heights, expected)
+            np.testing.assert_allclose(
+                heights * summary["sample_count"],
+                [summary["depths"][key]["counts"][str(k)] for k in (1, 2, 3)],
+            )
+            assert heights.sum() == pytest.approx(1)
+            np.testing.assert_allclose([patch.get_x() for patch in container], [0.5, 1.5, 2.5])
+            for patch in container:
+                assert patch.get_width() == pytest.approx(1)
+                assert patch.get_alpha() == 0.55
+                assert patch.get_facecolor()[3] == 0.55
+                assert colors.to_hex(patch.get_facecolor()) == color.lower()
+                assert colors.to_hex(patch.get_edgecolor()) == color.lower()
+                assert patch.get_linewidth() == 0.8
+                assert not patch.get_rasterized()
+            assert "%" in ax.yaxis.get_major_formatter()(0.5)
+            texts = [ax.xaxis.label, ax.yaxis.label, *ax.get_xticklabels(),
+                     *ax.get_yticklabels(), *ax.get_legend().get_texts()]
+            assert all(text.get_fontfamily() == ["Arial"] for text in texts)
+        assert not axes[0].get_xticklabels() and not axes[1].get_xticklabels()
+        assert axes[-1].get_xticklabels()
+        assert axes[0].containers[0][1].get_height() == 0
+        assert axes[1].containers[0][1].get_height() == 0
+        for key in columns:
+            np.testing.assert_array_equal(before[key], columns[key])
+    finally:
+        plt.close(fig)
+
+def test_depth_histogram_cli_exports(run_fixture, distribution_plot, tmp_path):
+    from PIL import Image
+
+    run, _ = run_fixture
+    analysis.analyze_run(run)
+    source = run / "analysis/depth_complexity/validation/depth_complexity.csv"
+    original = source.read_bytes()
+    destination = tmp_path / "histogram"
+    assert distribution_plot["main"]([
+        "--input", str(source), "--output-dir", str(destination),
+    ]) == 0
+    assert {path.name for path in destination.iterdir()} == {
+        "depth_distribution.svg", "depth_distribution.png",
+    }
+    svg = ET.parse(destination / "depth_distribution.svg").getroot()
+    ns = {"svg": "http://www.w3.org/2000/svg"}
+    texts = svg.findall(".//svg:text", ns)
+    assert texts and all("Arial" in text.attrib.get("style", "") for text in texts)
+    assert not svg.findall(".//svg:image", ns)
+    with Image.open(destination / "depth_distribution.png") as image:
+        assert image.size == (2550, 2700)
+        assert image.info["dpi"][0] == pytest.approx(300, abs=0.1)
+        image.verify()
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("corruption", ["empty", "duplicate", "depth", "mixed"])
+def test_depth_histogram_rejects_invalid_input(
+    run_fixture, distribution_plot, tmp_path, corruption
+):
+    run, _ = run_fixture
+    analysis.analyze_run(run)
+    source = run / "analysis/depth_complexity/validation/depth_complexity.csv"
+    rows = read_csv(source)
+    fields = list(rows[0])
+    if corruption == "empty":
+        rows = []
+    elif corruption == "duplicate":
+        rows.append(rows[0].copy())
+    elif corruption == "depth":
+        rows[0]["halt_depth"] = "4"
+    else:
+        rows[0]["checkpoint_id"] = "other"
+    write_csv(source, rows, fields)
+    destination = tmp_path / "invalid"
+    with pytest.raises(ValueError):
+        distribution_plot["plot_table"](source, destination)
+    assert not destination.exists()
