@@ -150,8 +150,7 @@ def prepare_run(run_dir, split="validation", batch_size=None, *, minimum_depth=1
     if scale <= 0:
         raise ValueError("Invalid target scale")
     threshold = _finite(execution["threshold"])
-    training_weight = _finite(config["task"]["lambda_compute"])
-    if not 0 < threshold <= 1 or training_weight < 0:
+    if not 0 < threshold <= 1:
         raise ValueError("Invalid adaptive policy settings")
     if execution.get("inference_rule", "cdf") != "cdf":
         raise ValueError("Only the CDF inference rule is supported")
@@ -170,7 +169,7 @@ def prepare_run(run_dir, split="validation", batch_size=None, *, minimum_depth=1
     policy = {
         "run_id": metadata["run_id"], "seed": config["seed"],
         "weight_tying": config["model"]["weight_tying"],
-        "execution_mode": "diagnostic", "lambda_compute": training_weight,
+        "execution_mode": "diagnostic",
         "inference_rule": "cdf", "threshold": threshold,
     }
     return DiagnosticRun(

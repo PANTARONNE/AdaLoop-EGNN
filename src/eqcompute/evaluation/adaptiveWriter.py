@@ -8,7 +8,7 @@ import torch
 
 from eqcompute.evaluation.predictionWriter import FIELDS
 
-POLICY_FIELDS = ["execution_mode", "lambda_compute", "inference_rule", "threshold"]
+POLICY_FIELDS = ["execution_mode", "inference_rule", "threshold"]
 SUMMARY_FIELDS = [
     key for key in FIELDS if key != "readout_depth"
 ] + POLICY_FIELDS + ["halt_depth", "executed_depth"]
@@ -31,7 +31,7 @@ def write_adaptive_predictions(
     model.eval()
     seen, count = set(), 0
     policy = {
-        "execution_mode": mode, "lambda_compute": task.config.lambda_compute,
+        "execution_mode": mode,
         "inference_rule": "cdf", "threshold": model.execution.threshold,
     }
     try:

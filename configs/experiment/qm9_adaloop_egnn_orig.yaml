@@ -8,7 +8,7 @@ model:
     name: adaptive
     depth: 12
     inference_rule: cdf
-    threshold: 0.5
+    threshold: 0.7
   halting:
     hidden_dim: 64
     use_delta: true
@@ -16,7 +16,6 @@ task:
   name: adaptive_regression
   supervision: adaptive
   normalization: mad
-  lambda_compute: 0.03
   # Explicit boundary remains unchanged on resume. Override with shorter training.
   warmup_epochs: 200
-experiment_name: qm9_${task.target}_adaloop_orig_k${model.execution.depth}_lambda${task.lambda_compute}_s${seed}
+experiment_name: qm9_${task.target}_adaloop_orig_k${model.execution.depth}_s${seed}

@@ -1,4 +1,4 @@
-"""Plot three vertically arranged depth distributions from an existing analysis CSV."""
+"""Plot two vertically arranged depth distributions from an existing analysis CSV."""
 
 import argparse
 from pathlib import Path
@@ -16,7 +16,7 @@ from matplotlib.ticker import PercentFormatter  # noqa: E402
 
 
 def make_figure(metadata, columns):
-    """Three vertically arranged distributions with a shared depth axis."""
+    """Two vertically arranged distributions with a shared depth axis."""
     _ensure_arial()
     maximum = int(metadata["max_depth"])
     bins = np.arange(0.5, maximum + 1.5)
@@ -26,8 +26,8 @@ def make_figure(metadata, columns):
         "font.family": "Arial", "font.size": 14.4,
         "axes.labelsize": 14.4, "xtick.labelsize": 14.4, "ytick.labelsize": 14.4,
     }):
-        fig, axes = plt.subplots(3, 1, sharex=True, figsize=(8.5, 9))
-        fig.subplots_adjust(left=0.15, right=0.97, bottom=0.08, top=0.98, hspace=0)
+        fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8.5, 6))
+        fig.subplots_adjust(left=0.15, right=0.97, bottom=0.12, top=0.98, hspace=0)
         for ax, (key, label, color, *_) in zip(axes, SERIES, strict=True):
             ax.hist(
                 columns[key], bins=bins, weights=weights, density=False,

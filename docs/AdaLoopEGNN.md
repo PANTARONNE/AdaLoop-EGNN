@@ -14,7 +14,7 @@
 
 默认 `task.target=mu`、`task.normalization=mad`，归一化仅用训练标签拟合。
 可通过 `task.normalization=standard` 或 `none` 切换；对照实验需统一该设置。
-默认 `task.lambda_compute=0.03`、`model.execution.threshold=0.5`。
+默认 `model.execution.threshold=0.5`。
 改变深度仍使用 `model.execution.depth`；自适应模型中该值表示 Kmax。
 
 固定深度、Loop、M0 诊断和 AdaLoop 均直接使用 `dataset=qm9`、`dataset.root=data/qm9`。
@@ -93,7 +93,7 @@ $\sum_{k=1}^{K}p_{b,k}=1$。末步直接设 $q_{b,K}=1$ 并接收全部剩余质
 
 **Loss 设计**
 
-训练目标是在预测误差与期望展开深度之间做权衡。标签先转换为
+训练目标是停止分布下的期望预测误差。标签先转换为
 $\tilde y_b=(y_b-m)/s$，其中 $m$、$s$ 仅在训练集拟合。默认 `mad` 使用训练均值 $m$
 和平均绝对偏差 $s=\operatorname{mean}_{\mathrm{train}}|y-m|$
 （这里不是中位数绝对偏差）；`standard` 使用总体标准差，二者的 scale 均下限截断为
@@ -109,26 +109,17 @@ $$
 $$
 
 $$
-\mathcal{L}_{\mathrm{compute}}
-=\frac{1}{B}\sum_{b=1}^{B}\sum_{k=1}^{K}p_{b,k}\frac{k}{K}
-=\frac{1}{BK}\sum_{b=1}^{B}\mathbb{E}_{p_b}[D_b],
-$$
-
-$$
 \mathcal{L}
-=\mathcal{L}_{\mathrm{prediction}}
-+\lambda_{\mathrm{compute}}\mathcal{L}_{\mathrm{compute}}.
+=\mathcal{L}_{\mathrm{prediction}}.
 $$
 
-其中 $D_b\in\{1,\ldots,K\}$ 为停止深度随机变量。
-`task.loss=mse` 时仅将 $\ell_{b,k}$ 换为平方误差，停止分布和成本项保持相同定义。
+`task.loss=mse` 时仅将 $\ell_{b,k}$ 换为平方误差，停止分布保持相同定义。
 单性质预测张量形状为 `[B,K,1]`，标签为 `[B,1]`，停止质量为 `[B,K]`；
 实现先计算每个样本、每个深度的误差，再沿深度按 $p$ 加权，最后沿 batch 求均值：
 
 ```text
 prediction_loss = mean_b sum_k p[b,k] * abs(y_k[b]-normalized_target[b])
-compute_loss = mean_b sum_k p[b,k] * k/Kmax
-loss = prediction_loss + lambda_compute*compute_loss
+loss = prediction_loss
 ```
 
 这里优化的是停止分布下的**期望误差**，不是先混合预测再计算误差
@@ -136,22 +127,19 @@ $|\sum_k p_{b,k}\hat y_{b,k}-\tilde y_b|$。例如目标为 2、两步预测为 
 停止质量各为 0.5 时，期望 MAE 为 2，而混合预测的 MAE 为 0；
 后者可能通过不同深度误差抵消，无法反映实际选择某一步输出时的误差。
 
-成本项取值在 $[1/K,1]$，是归一化期望深度代理，不是实测 FLOPs、节点/边操作数或延迟。
-默认 $\lambda_{\mathrm{compute}}=0.03$，可配置为任意有限非负值；增大它会加强浅层停止的
-优化压力，实际停止深度还取决于各步误差和模型训练结果。标签归一化会影响误差项与成本项的
-相对尺度，因此比较不同实验时需统一 normalization 和 lambda。
+各深度误差相同时，调整停止质量不会改变损失；停止深度由各步误差和模型训练结果决定。
+比较不同实验时需统一 normalization。
 
 自适应阶段完整展开到 $K$，不采样离散停止深度，也不通过 CDF 阈值选择反向传播。
 $\hat y_{b,k}$ 与 $p_{b,k}$ 都保留计算图：预测项训练 backbone/readout/head，
-并通过停止质量训练 controller；成本项通过停止质量训练 controller，也经图统计量
-反传到 backbone。Controller 学习在“当前预测误差加深度成本”与继续计算的期望收益之间
-分配停止质量，无需 Oracle 停止标签或 REINFORCE。当前目标没有额外的熵正则或
+并通过停止质量训练 controller。Controller 根据各深度的预测误差分配停止质量，
+无需 Oracle 停止标签或 REINFORCE。当前目标没有额外的熵正则或
 Oracle 监督；`halting_entropy` 仅作为日志指标。
 
 Warm-up 阶段每个 batch 均匀抽取一个深度 $k^\star\sim\mathrm{Uniform}\{1,\ldots,K\}$，
 整个 batch 执行到该深度，使用
 $\mathcal{L}_{\mathrm{warmup}}=\frac{1}{B}\sum_b\ell_{b,k^\star}$。
-此时不调用 controller、不加入 compute loss，仅训练共享 backbone/readout/head，
+此时不调用 controller，仅训练共享 backbone/readout/head，
 使其在不同深度都能输出预测；进入自适应阶段后再联合学习停止策略。
 Validation 始终使用 `full` 模式计算上述自适应 loss，包括 warm-up 期间的 validation。
 
@@ -219,13 +207,13 @@ python scripts/train.py experiment=qm9_adaloop_egnn_orig \
   resume=outputs/<run>/checkpoints/last.pt
 ```
 
-保持数据、模型、task（含 warm-up、lambda）、优化器及 cosine 周期配置一致。
+保持数据、模型、task（含 warm-up）、优化器及 cosine 周期配置一致。
 本轮不实现从旧 Loop 权重迁移初始化 AdaLoop；resume 不是跨模型迁移。
 
-metrics.csv 新增 prediction/compute loss、expected_depth、halt_depth、executed_depth、
+metrics.csv 保存 prediction_loss、expected_depth、halt_depth、executed_depth、
 首步/末步停止比例、分布熵和 warm-up 标记。按样本数加权；不适用统计留空，表头不变。
 expected_depth 是 soft 期望；halt_depth 是选择结果；executed_depth 是实际执行长度。
-validation 使用完整轨迹，因此其 executed_depth=Kmax，不能当作部署执行成本。
+validation 使用完整轨迹，因此其 executed_depth=Kmax。
 
 **预测、Oracle 与结构指标**
 
@@ -237,7 +225,7 @@ python scripts/predict.py --checkpoint outputs/<run>/checkpoints/best.pt \
 
 自适应默认输出 `test_best_adaptive.csv`，一行对应一个分子，含 hard 预测与停止/执行深度。
 diagnostic 输出 `validation_best_diagnostic_by_depth.csv`，含 y_k、q、p、survival、soft E[K]。
-所有文件保存 checkpoint 哈希、split ID、lambda、CDF 阈值和执行模式。
+所有文件保存 checkpoint 哈希、split ID、CDF 阈值和执行模式。
 旧 fixed checkpoint 仍输出原 `*_by_depth.csv`；`evalDepth.py` 仅汇总 fixed 模型。
 
 M0 固定轨迹或 adaptive diagnostic 轨迹均可离线计算 Oracle：
@@ -246,16 +234,16 @@ M0 固定轨迹或 adaptive diagnostic 轨迹均可离线计算 Oracle：
 python -m eqcompute.analysis.oracleDepth \
   outputs/<run>/predictions/validation_best_by_depth.csv \
   --checkpoint outputs/<run>/checkpoints/best.pt \
-  --lambda-oracle 0.03 --output outputs/<run>/analysis/oracle.csv
+  --output outputs/<run>/analysis/oracle.csv
 
 python -m eqcompute.analysis.complexity \
   --checkpoint outputs/<run>/checkpoints/best.pt --split validation \
   --output outputs/<run>/analysis/complexity.csv
 ```
 
-Oracle 按 checkpoint 的训练集 scale 缩放绝对误差，输出无成本与带 k/Kmax 成本的两种
-argmin；平局取最浅深度，另保存 normalization、scale 和 lambda_oracle。错误列为归一化
-绝对误差，unit 列标记原目标单位。lambda_oracle 与训练 lambda_compute 相互独立。
+Oracle 按 checkpoint 的训练集 scale 缩放绝对误差，仅输出误差最小的深度；
+平局取最浅深度，另保存 normalization 和 scale。错误列为归一化绝对误差，
+unit 列标记原目标单位。
 检查哈希、性质、单位、深度覆盖和重复行；存在 split_ids.json 时还检查整套样本覆盖。
 Oracle 使用标签，仅供分析，不能用于推理或 test 超参选择。
 

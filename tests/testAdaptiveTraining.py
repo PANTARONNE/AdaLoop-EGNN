@@ -48,11 +48,17 @@ def test_resume_across_warmup_and_adaptive(adaptive_config, samples, tmp_path, p
     saved = load_checkpoint(tmp_path / "resumed/checkpoints/last.pt")
     assert saved["task"] == resumed.task.state_dict()
     assert saved["task"]["warmup_epochs"] == 1
+    assert "lambda_compute" not in saved["config"]["task"]
+    assert "_lambda" not in saved["config"]["experiment_name"]
     with (tmp_path / "full/metrics.csv").open() as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 3
-    assert rows[0]["train_compute_loss"] == ""
-    assert float(rows[1]["train_compute_loss"]) > 0
+    for stage in ("train", "validation"):
+        assert f"{stage}_compute_loss" not in rows[0]
+        for row in rows:
+            assert float(row[f"{stage}_loss"]) == float(row[f"{stage}_prediction_loss"])
+    assert rows[0]["train_expected_depth"] == ""
+    assert float(rows[1]["train_expected_depth"]) > 0
     assert float(rows[1]["train_executed_depth"]) == 4
 
 
@@ -100,8 +106,8 @@ def test_small_adaptive_problem_learns(adaptive_config, batch):
     assert final < initial * 0.2, (initial, final)
 
 
-@pytest.mark.parametrize("name,value", [("lambda_compute", -1), ("warmup_epochs", 0.5)])
-def test_invalid_task(adaptive_config, name, value):
-    adaptive_config.task[name] = value
+@pytest.mark.parametrize("value", [-1, 0.5, True])
+def test_invalid_task(adaptive_config, value):
+    adaptive_config.task.warmup_epochs = value
     with pytest.raises(ValueError):
         AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())

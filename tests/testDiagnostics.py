@@ -9,7 +9,8 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from eqcompute.analysis.complexity import graph_complexity, write_complexity
-from eqcompute.analysis.oracleDepth import oracle_depths, write_oracles
+from eqcompute.analysis.oracleDepth import main as oracle_main
+from eqcompute.analysis.oracleDepth import oracle_depth, write_oracles
 from eqcompute.application import make_loader
 from eqcompute.evaluation.predictionWriter import file_hash, write_predictions
 from eqcompute.models.iterative import build_egnn_orig
@@ -43,12 +44,27 @@ def test_diagnostic_preset_all_steps_gradients_and_orig_defaults(batch):
                for value in output.predictions_by_depth.values())
 
 
-def test_oracle_ties_and_cost():
-    assert oracle_depths([0.4, 0.1, 0.1]) == (2, 2)
-    assert oracle_depths([0.2, 0.1, 0.0], 0.9) == (3, 1)
-    assert oracle_depths([2.0], 1.0) == (1, 1)
+def test_oracle_ties_and_boundaries():
+    assert oracle_depth([0.4, 0.1, 0.1]) == 2
+    assert oracle_depth([0.2, 0.1, 0.0]) == 3
+    assert oracle_depth([2.0]) == 1
+
+
+@pytest.mark.parametrize("errors", [[], [-1.0], [float("nan")], [float("inf")]])
+def test_oracle_rejects_invalid_errors(errors):
     with pytest.raises(ValueError):
-        oracle_depths([float("nan")])
+        oracle_depth(errors)
+
+
+def test_oracle_cli_rejects_removed_cost_option(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", [
+        "oracleDepth", "predictions.csv", "--checkpoint", "best.pt",
+        "--output", "oracle.csv", "--lambda-oracle", "0",
+    ])
+    with pytest.raises(SystemExit) as error:
+        oracle_main()
+    assert error.value.code == 2
+    assert "unrecognized arguments: --lambda-oracle" in capsys.readouterr().err
 
 
 def test_oracle_export_scale_provenance_missing_and_duplicate(
@@ -73,19 +89,18 @@ def test_oracle_export_scale_provenance_missing_and_duplicate(
                       split="validation", train_depth=4, weight_tying=True,
                       supervision="all_steps", seed=0)
     write_predictions(model, task, make_loader(samples, config.loader), "cpu", source, provenance)
-    assert write_oracles(source, checkpoint, destination, 0.03) == 4
+    assert write_oracles(source, checkpoint, destination) == 4
     with destination.open() as handle:
         results = list(csv.DictReader(handle))
     assert all(float(row["target_scale"]) == 2 for row in results)
+    assert not {"lambda_oracle", "cost_oracle_depth", "cost_oracle_error"} & results[0].keys()
     with source.open() as handle:
         reader = csv.DictReader(handle)
         fields, rows = reader.fieldnames, list(reader)
     for record in results:
         errors = [abs(float(row["y_pred"]) - float(row["y_true"])) / 2
                   for row in rows if row["sample_id"] == record["sample_id"]]
-        assert (int(record["oracle_depth"]), int(record["cost_oracle_depth"])) == oracle_depths(
-            errors, 0.03
-        )
+        assert int(record["oracle_depth"]) == oracle_depth(errors)
     for invalid in (
         rows[:-1], [rows[0], *rows],
         [row for row in rows if row["sample_id"] != samples[-1].sample_id],

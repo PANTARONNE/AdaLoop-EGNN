@@ -1,21 +1,14 @@
-import math
-
 import torch
 
 from eqcompute.contracts import TaskResult
 from eqcompute.tasks.regression import RegressionTask
 
 
-def adaptive_loss(predictions, target, probabilities, lambda_compute, loss="mae"):
+def adaptive_loss(predictions, target, probabilities, loss="mae"):
     """Predictions [B,K,1], target [B,1], probabilities [B,K]."""
     errors = predictions - target[:, None, :]
     errors = errors.abs() if loss == "mae" else errors.square()
-    prediction_loss = (probabilities * errors.mean(-1)).sum(1).mean()
-    costs = torch.arange(
-        1, probabilities.shape[1] + 1, device=probabilities.device, dtype=probabilities.dtype
-    ) / probabilities.shape[1]
-    compute_loss = (probabilities * costs).sum(1).mean()
-    return prediction_loss + lambda_compute * compute_loss, prediction_loss, compute_loss
+    return (probabilities * errors.mean(-1)).sum(1).mean()
 
 
 class AdaptiveRegressionTask(RegressionTask):
@@ -23,8 +16,6 @@ class AdaptiveRegressionTask(RegressionTask):
 
     def __init__(self, config, target_index, unit, transform):
         super().__init__(config, target_index, unit, transform)
-        if not math.isfinite(config.lambda_compute) or config.lambda_compute < 0:
-            raise ValueError("lambda_compute must be nonnegative and finite")
         if type(config.warmup_epochs) is not int or config.warmup_epochs < 0:
             raise ValueError("warmup_epochs must be a nonnegative integer")
         self.epoch = 0
@@ -48,17 +39,14 @@ class AdaptiveRegressionTask(RegressionTask):
         if warmup:
             error = output.prediction - normalized
             prediction_loss = (error.abs() if self.config.loss == "mae" else error.square()).mean()
-            loss, compute_loss = prediction_loss, None
         else:
             values = torch.stack(list(output.predictions_by_depth.values()), 1)
-            loss, prediction_loss, compute_loss = adaptive_loss(
-                values, normalized, info.stop_probabilities,
-                self.config.lambda_compute, self.config.loss,
+            prediction_loss = adaptive_loss(
+                values, normalized, info.stop_probabilities, self.config.loss,
             )
         p = info.stop_probabilities
         statistics = {
             "prediction_loss": prediction_loss.detach().item(),
-            "compute_loss": None if compute_loss is None else compute_loss.detach().item(),
             "expected_depth": (
                 None if info.expected_depth is None else info.expected_depth.detach().mean().item()
             ),
@@ -75,7 +63,7 @@ class AdaptiveRegressionTask(RegressionTask):
             "warmup_fraction": float(warmup),
         }
         return TaskResult(
-            loss, self.transform.decode(output.prediction.detach()), target.detach(),
+            prediction_loss, self.transform.decode(output.prediction.detach()), target.detach(),
             batch.graph.num_graphs, statistics,
         )
 

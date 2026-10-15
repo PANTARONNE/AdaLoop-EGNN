@@ -1,5 +1,25 @@
 # 验证记录
 
+**2026-10-16：移除 computation cost**
+
+训练仅保留停止概率加权预测误差；删除成本权重配置、日志和导出字段，以及成本最优
+Oracle 和 CLI 参数。保留全部停止深度统计和分子结构复杂度；散点图保留两类深度，
+深度分布图改为两行、8.5 × 6 英寸。smoke 保留 full/hard 一致性检查，删除成本汇总。
+
+非 integration 测试：**182 passed、4 skipped、1 deselected**；4 项跳过均因 CUDA
+不可用，1 项真实 QM9 integration 测试未选择。Ruff（src/tests/scripts/plot）和
+`git diff --check` 通过。测试覆盖 MAE/MSE 手算损失、等误差深度的概率重分配、
+controller 梯度与阶段切换、新格式恢复、导出、缓存、CLI 及 SVG/PNG 绘图。
+
+本次测试通过绝对路径 `PYTHONPATH` 导入源码，并以 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+隔离环境中不相关的 pytest 插件。Arial 解压到 `/tmp/adaloop-font-data/fonts`，
+测试设置 `XDG_DATA_HOME=/tmp/adaloop-font-data`、`MPLCONFIGDIR=/tmp/adaloop-matplotlib`；
+保留原有 Arial 字体要求。未启动完整训练或修改既有实验结果。
+
+> 以下为各记录日期的历史验收结果。自 2026-10-16 起，当前实现已移除训练计算成本项、
+> 成本最优 Oracle 及 smoke 成本汇总；历史结果、路径和指标保留原样。
+> 当前行为见 [AdaLoopEGNN.md](docs/AdaLoopEGNN.md)。
+
 **2026-10-12：训练默认切换到本地 PyG QM9**
 
 按用户要求，直接修改原配置的继承链；固定 EGNNOrig、Loop、M0 诊断和 AdaLoop

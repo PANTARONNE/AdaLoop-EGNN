@@ -11,21 +11,14 @@ from eqcompute.evaluation.predictionWriter import file_hash
 from eqcompute.training.checkpoint import load_checkpoint
 
 
-def oracle_depths(errors, lambda_oracle=0.0):
+def oracle_depth(errors) -> int:
     if not errors or any(not math.isfinite(e) or e < 0 for e in errors):
         raise ValueError("errors must be a nonempty finite nonnegative sequence")
-    if not math.isfinite(lambda_oracle) or lambda_oracle < 0:
-        raise ValueError("lambda_oracle must be finite and nonnegative")
     # Python min preserves the first (shallowest) index on exact ties.
-    best = min(range(len(errors)), key=lambda i: errors[i])
-    sufficient = min(
-        range(len(errors)), key=lambda i: errors[i] + lambda_oracle * (i + 1) / len(errors)
-    )
-    return best + 1, sufficient + 1
+    return min(range(len(errors)), key=lambda i: errors[i]) + 1
 
 
-def write_oracles(source, checkpoint_path, destination, lambda_oracle=0.0, overwrite=False):
-    oracle_depths([0.0], lambda_oracle)  # Validate before creating output.
+def write_oracles(source, checkpoint_path, destination, overwrite=False):
     source, destination = Path(source), Path(destination)
     if source.resolve() == destination.resolve():
         raise ValueError("Oracle output must not overwrite the prediction source")
@@ -44,8 +37,8 @@ def write_oracles(source, checkpoint_path, destination, lambda_oracle=0.0, overw
     }
     fields = [
         "checkpoint_id", "split_id", "split", "sample_id", "property", "unit",
-        "supervision", "normalization", "target_scale", "lambda_oracle", "max_depth",
-        "oracle_depth", "cost_oracle_depth", "min_error", "cost_oracle_error",
+        "supervision", "normalization", "target_scale", "max_depth",
+        "oracle_depth", "min_error",
     ]
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".tmp")
@@ -78,15 +71,14 @@ def write_oracles(source, checkpoint_path, destination, lambda_oracle=0.0, overw
                 record["errors"][depth] = abs(prediction - target) / scale
                 if len(record["errors"]) == maximum:
                     errors = [record["errors"][k] for k in range(1, maximum + 1)]
-                    best, cost = oracle_depths(errors, lambda_oracle)
+                    best = oracle_depth(errors)
                     writer.writerow({
                         **{k: expected[k] for k in ("checkpoint_id", "split_id", "property", "unit",
                                                     "supervision")},
                         "split": split, "sample_id": sample,
                         "normalization": config["task"]["normalization"], "target_scale": scale,
-                        "lambda_oracle": lambda_oracle, "max_depth": maximum,
-                        "oracle_depth": best, "cost_oracle_depth": cost,
-                        "min_error": errors[best - 1], "cost_oracle_error": errors[cost - 1],
+                        "max_depth": maximum,
+                        "oracle_depth": best, "min_error": errors[best - 1],
                     })
                     completed.add(sample)
                     del pending[sample]
@@ -110,11 +102,10 @@ def main():
     parser.add_argument("source")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--lambda-oracle", type=float, default=0.0)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     count = write_oracles(
-        args.source, args.checkpoint, args.output, args.lambda_oracle, args.overwrite
+        args.source, args.checkpoint, args.output, args.overwrite
     )
     print(f"Wrote {count} oracle rows: {args.output}")
 

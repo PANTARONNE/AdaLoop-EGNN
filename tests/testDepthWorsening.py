@@ -47,12 +47,14 @@ def test_analysis_raw_errors_all_molecules_cache_repair_and_overwrite(
     assert "N=2" in capsys.readouterr().out
     output = run / "analysis/depth_worsening/validation"
     summary = json.loads((output / "summary.json").read_text())
+    assert "lambda_compute" not in summary
     assert summary["population"] == "all" and summary["error_units"] == "original"
     assert [row["worsening_proportion"] for row in summary["transitions"]] == [0, 0.5]
     assert all(row["sample_count"] == 2 for row in summary["transitions"])
     assert calls == {"predict": 1, "load": 0}
     assert not (run / "analysis/depth_complexity").exists()
     rows = read_csv(output / "depth_worsening.csv")
+    assert "lambda_compute" not in rows[0]
     assert [int(row["worse_count"]) for row in rows] == [0, 1]
     # The worsening molecule halted at depth 1, but still counts in transition 2 -> 3.
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in output.iterdir()}

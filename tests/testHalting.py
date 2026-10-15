@@ -20,17 +20,26 @@ def test_stopping_probabilities_boundaries_and_gradients():
     torch.testing.assert_close(stopping_distribution(torch.rand(2, 1)), torch.ones(2, 1))
 
 
-def test_expected_loss_is_per_sample_not_mixture():
+@pytest.mark.parametrize("criterion,expected", [("mae", 1.25), ("mse", 2.5)])
+def test_expected_loss_is_per_sample_not_mixture(criterion, expected):
     predictions = torch.tensor([[[0.], [4.]], [[3.], [1.]]], requires_grad=True)
     target = torch.tensor([[2.], [1.]])
     p = torch.tensor([[0.75, 0.25], [0.25, 0.75]], requires_grad=True)
-    loss, pred, compute = adaptive_loss(predictions, target, p, 0.4)
-    torch.testing.assert_close(pred, torch.tensor(1.25))
-    torch.testing.assert_close(compute, torch.tensor(0.75))
-    torch.testing.assert_close(loss, torch.tensor(1.55))
+    loss = adaptive_loss(predictions, target, p, criterion)
+    torch.testing.assert_close(loss, torch.tensor(expected))
     loss.backward()
     assert predictions.grad.abs().sum() > 0
     assert p.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("criterion,expected", [("mae", 2.0), ("mse", 4.0)])
+def test_equal_errors_have_no_preference_for_shallow_depths(criterion, expected):
+    predictions = torch.tensor([[[2.], [-2.], [2.]]])
+    target = torch.zeros(1, 1)
+    for p in (torch.tensor([[1., 0., 0.]]), torch.tensor([[0., 0., 1.]])):
+        torch.testing.assert_close(
+            adaptive_loss(predictions, target, p, criterion), torch.tensor(expected)
+        )
 
 
 def test_controller_graph_statistics_permutation_and_single_node(batch):

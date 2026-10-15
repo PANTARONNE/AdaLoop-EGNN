@@ -2,7 +2,7 @@
 
 当前实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测，
 以及基于 EGNNOrig 的单性质 AdaLoop（M0–M3）：逐深度诊断、Oracle、两阶段训练、
-计算惩罚和实际提前退出。默认 MAD，可通过配置切换。用法见 [AdaLoop 说明](docs/AdaLoopEGNN.md)。
+停止概率加权预测损失和实际提前退出。默认 MAD，可通过配置切换。用法见 [AdaLoop 说明](docs/AdaLoopEGNN.md)。
 不包含多性质条件化、QMugs、PaiNN 或晶体模型。
 
 EGNNOrig 骨架入口为 `experiment=qm9_egnn_orig`，与 Loop / AdaLoop 配置均直接使用
@@ -161,7 +161,7 @@ python scripts/sweepDepth.py --gpus 0 --depths 4 --seeds 1 \
 
 `task.supervision=all_steps`：所有执行深度的标量 loss 等权平均，所有深度共用同一 head。
 用于单个 checkpoint 的预测随深度变化实验。这是另一种训练协议，不能与 final 混报。
-两者均无 halting、随机深度 warm-up 或计算惩罚。
+两者均无 halting 或随机深度 warm-up。
 
 默认目标为 mu。支持通过配置选择 PyG QM9 的 19 个目标；推荐先比较 mu、alpha、gap、U0。
 单目标 checkpoint 拒绝其他 property context；预留参数不意味着已经实现多目标模型。
@@ -320,7 +320,7 @@ Val/Test 只汇总同一组成功评估的 seed，`Seeds` 显示有效数/计划
 
 ## 分子复杂度与深度分析
 
-对单次 AdaLoop 训练目录，一条命令完成完整轨迹导出、五种复杂度统计、两种 Oracle 和模型停止深度分析。
+对单次 AdaLoop 训练目录，一条命令完成完整轨迹导出、五种复杂度统计、误差最优 Oracle 和模型停止深度分析。
 必须存在 `checkpoints/best.pt` 与 `split_ids.json`，仅支持 adaptive checkpoint；
 不会回退到可能仍在 warm-up 的 `last.pt`。数据集需在 checkpoint 保存的位置可访问，
 例如 WSL 训练得到的路径应在相同 WSL 环境执行。
@@ -332,20 +332,19 @@ python scripts/depthComplexity.py --run-dir outputs/<run>
 python scripts/depthComplexity.py --run-dir outputs/<run> --split test
 ```
 
-可选 `--device auto|cpu|cuda:0`、`--batch-size 96`、`--lambda-oracle 0.03`。
-默认 split 为 validation，batch size 沿用训练配置，
-lambda_oracle 默认读取 checkpoint 的 lambda_compute，显式传 0 可关闭 Oracle 成本项。
+可选 `--device auto|cpu|cuda:0`、`--batch-size 96`。
+默认 split 为 validation，batch size 沿用训练配置。
 
 预测复用 `predictions/<split>_best_diagnostic_by_depth.csv`。
 分析输出至 `analysis/depth_complexity/<split>/`：
 
 - `complexity.csv`：每个分子的全部五种复杂度。
-- `oracle.csv`：现有 Oracle 格式，误差为按训练集 scale 归一化的绝对误差。
-- `depth_complexity.csv`：每个分子一行，三种深度、全部复杂度及来源信息。
-- `summary.json`：样本数、各深度频数和占比、不同深度数量、两两一致率及输入哈希。
+- `oracle.csv`：每个分子的误差最优深度，误差为按训练集 scale 归一化的绝对误差。
+- `depth_complexity.csv`：每个分子一行，误差最优深度、模型停止深度、全部复杂度及来源信息。
+- `summary.json`：样本数、各深度频数和占比、不同深度数量、Oracle 与停止深度一致率及输入哈希。
 
-默认检查并复用有效结果，补齐缺失产物，不重复推理。来源不符、内容不完整或
-lambda_oracle 改变时会报错；使用 `--overwrite` 重新生成当前划分的预测和分析结果。
+默认检查并复用有效结果，补齐缺失产物，不重复推理。来源不符或内容不完整时会报错；
+使用 `--overwrite` 重新生成当前划分的预测和分析结果。
 不会修改其他划分的数据。终端打印统计摘要和输出位置。
 
 绘图独立执行，只读取分析 CSV，无需模型、PyTorch 或数据集：
@@ -367,21 +366,20 @@ python plot/depthComplexity.py \
 | element_count | 元素种类数 |
 | element_entropy | 元素组成熵，使用自然对数 |
 
-每张图包含所有分子，纵轴为 Depth，三类散点固定如下：
+每张图包含所有分子，纵轴为 Depth，两类散点固定如下：
 
 | 类型 | 定义 | 颜色 | 点形 |
 |---|---|---|---|
 | oracle_depth | 最小绝对预测误差对应深度 | #C30078 | 圆形 |
-| cost_oracle_depth | 最小归一化误差 + lambda_oracle × k/Kmax 对应深度 | #4370B4 | 三角形 |
 | halt_depth | 控制器按保存的 CDF 阈值选择的停止深度 | #529F9A | 方形 |
 
 Oracle 平局选择最浅深度。halt_depth 不等于 diagnostic 模式下恒为 Kmax 的 executed_depth。
-三种定义可能相同，结果不预设分子之间一定存在差异。散点图仅检验这个 checkpoint、
+两种定义可能相同，结果不预设分子之间一定存在差异。散点图仅检验这个 checkpoint、
 这个预测性质下的深度差异，不能证明复杂度与最优深度有因果关系。
 Oracle 使用真实标签，仅用于离线分析，不用于部署推理或测试集调参。
 
 默认使用小点、透明度及仅在显示层生效的扰动：离散横轴 ±0.18，纵轴 ±0.04，
-三类纵坐标偏移分别为 −0.18、0、+0.18。按 sample_id 排序，同一分子共用随机扰动；
+两类纵坐标偏移分别为 −0.18、+0.18。按 sample_id 排序，同一分子共用随机扰动；
 `--jitter-seed` 默认 42；`--no-jitter` 关闭所有抖动和类别错位。
 CSV、统计及整数刻度不受影响。图中仅保留坐标轴、刻度和图例，移除标题及下方说明，所有文字使用 Arial。
 
@@ -392,7 +390,7 @@ SVG 保留矢量散点及可编辑文字，PNG 为 300 DPI；不输出 PDF，不
 
 ### 深度分布比例直方图
 
-直接读取上述分析 CSV，将三种深度绘制为上中下三个直方图：
+直接读取上述分析 CSV，将两种深度绘制为上下两个直方图：
 
 ```bash
 python plot/depthDistribution.py \
@@ -405,11 +403,11 @@ python plot/depthDistribution.py --input outputs/depth_complexity.csv --output-d
 
 横轴为 1…Kmax 的整数深度，每个整数对应宽度为 1 的区间；
 纵轴为该深度分子数占总分子数的比例，以百分比显示。
-每种深度分别归一化为 100%，不将三种类型合并为一个分母；零频数深度仍保留。
-上、中、下依次为 Error-optimal depth、Cost-optimal depth、Model halt depth；共享横轴范围和刻度；各子图纵轴上限为严格高于最高柱比例的最小整十百分比。
+每种深度分别归一化为 100%，不将两种类型合并为一个分母；零频数深度仍保留。
+上、下依次为 Error-optimal depth、Model halt depth；共享横轴范围和刻度；各子图纵轴上限为严格高于最高柱比例的最小整十百分比。
 柱体透明度为 0.55，使用同色边框，颜色及 Arial 字体沿用复杂度散点图。
 各子图右上角放置单项图例，仅底部显示横轴刻度文字及 Depth 标签；各子图显示百分比纵轴。
-画布为 8.5 × 9 英寸，三个子图上下相连无间隙；坐标轴标签及刻度字号为 14.4，图例字号为 12.96（在上一版基础上再放大 20%）。
+画布为 8.5 × 6 英寸，两个子图上下相连无间隙；坐标轴标签及刻度字号为 14.4，图例字号为 12.96。
 无标题和下方说明，不添加抖动或类别错位。
 输出 `depth_distribution.svg`（矢量图形、可编辑文字）与
 `depth_distribution.png`（300 DPI）。无需重新推理，不按分子复杂度分组或筛选样本。
@@ -438,7 +436,7 @@ python plot/depthWorsening.py \
 $r_k=\frac{1}{N}\sum_{i=1}^{N}\mathbf{1}[e_{i,k+1}>e_{i,k}]$。
 严格大于才算变差，持平不计入，不引入容差；每层分母都是全部 N 个分子，包括已停止的分子。
 横轴 k 表示从 k 到 k+1 的变化，只显示 1…Kmax−1，各柱比例独立，合计不要求为 100%。
-这描述单分子误差变差的发生比例，不等于整体 MAE 的变化幅度，也不使用成本惩罚。
+这描述单分子误差变差的发生比例，不等于整体 MAE 的变化幅度。
 仅含 optimal/halt depth 的 `depth_complexity.csv` 无法恢复这些逐深度比较。
 
 使用一次批量直方图调用，区间为 [k−0.5, k+0.5)，保留零比例深度，无抖动。

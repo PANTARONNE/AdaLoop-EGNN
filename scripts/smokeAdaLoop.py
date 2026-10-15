@@ -38,21 +38,13 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
     )
     metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
     model.eval()
-    maximum_difference, hard_work, full_work = 0.0, [], []
+    maximum_difference = 0.0
     metric = RegressionMetrics()
-    work = []
-    hook = model.operators.at(1).register_forward_pre_hook(
-        lambda _, args: work.append((len(args[0].node_features), args[0].edge_index.shape[1]))
-    )
     with torch.inference_mode():
         for batch in test:
             batch = batch.to(device)
-            work.clear()
             full = task.predict(model, batch, execution_mode="diagnostic")
-            full_work.extend(work)
-            work.clear()
             hard = task.predict(model, batch, execution_mode="hard")
-            hard_work.extend(work)
             torch.testing.assert_close(full.prediction, hard.prediction, atol=1e-5, rtol=1e-5)
             if not torch.equal(full.adaptive.halt_depth, hard.adaptive.halt_depth):
                 raise AssertionError("Compact and full stopping depths differ")
@@ -60,7 +52,6 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
                 maximum_difference, (full.prediction - hard.prediction).abs().max().item()
             )
             metric.update(task.transform.decode(hard.prediction), task.targets(batch))
-    hook.remove()
     for mode, suffix in (("hard", "adaptive"), ("diagnostic", "diagnostic_by_depth")):
         write_adaptive_predictions(
             model, task, test, device, output / f"predictions/test_best_{suffix}.csv",
@@ -77,10 +68,6 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
         "test": metric.compute(), "max_normalized_full_hard_difference": maximum_difference,
         "halting_consistency": 1.0,
         "average_halt_depth": sum(int(r["halt_depth"]) for r in rows) / len(rows),
-        "full_node_steps": sum(n for n, _ in full_work),
-        "hard_node_steps": sum(n for n, _ in hard_work),
-        "full_edge_steps": sum(e for _, e in full_work),
-        "hard_edge_steps": sum(e for _, e in hard_work),
     }
     (output / "smoke_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return output, summary

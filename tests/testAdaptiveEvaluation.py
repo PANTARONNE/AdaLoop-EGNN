@@ -25,6 +25,9 @@ def test_hard_and_diagnostic_exports(adaptive_config, samples, tmp_path):
         hard_rows = list(csv.DictReader(handle))
     with full.open() as handle:
         full_rows = list(csv.DictReader(handle))
+    assert "lambda_compute" not in hard_rows[0]
+    assert "lambda_compute" not in full_rows[0]
+    assert all(float(row["expected_depth"]) >= 1 for row in full_rows)
     for row in hard_rows:
         trajectory = [r for r in full_rows if r["sample_id"] == row["sample_id"]]
         chosen = trajectory[int(row["halt_depth"]) - 1]

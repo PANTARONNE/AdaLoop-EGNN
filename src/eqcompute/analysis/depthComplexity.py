@@ -14,14 +14,14 @@ from eqcompute.analysis.diagnostic import (
     load_predictions,
     prepare_run,
 )
-from eqcompute.analysis.oracleDepth import oracle_depths, write_oracles
+from eqcompute.analysis.oracleDepth import oracle_depth, write_oracles
 from eqcompute.evaluation.predict import load_evaluation
 from eqcompute.evaluation.predictionWriter import file_hash
 
 COMPLEXITIES = (
     "atom_count", "heavy_atom_count", "radius_gyration", "element_count", "element_entropy",
 )
-DEPTHS = ("oracle_depth", "cost_oracle_depth", "halt_depth")
+DEPTHS = ("oracle_depth", "halt_depth")
 
 
 def _complexities(path, split_id, split, samples):
@@ -50,20 +50,13 @@ def _complexities(path, split_id, split, samples):
     return result
 
 
-def analyze_run(
-    run_dir, split="validation", device="auto", batch_size=None,
-    lambda_oracle=None, overwrite=False,
-):
+def analyze_run(run_dir, split="validation", device="auto", batch_size=None, overwrite=False):
     """Return a JSON-compatible summary; valid caches never trigger inference."""
     run = prepare_run(run_dir, split, batch_size)
     config, metadata = run.config, run.metadata
     checkpoint_path, prediction_path = run.checkpoint_path, run.prediction_path
     provenance, policy = run.provenance, run.policy
     samples, maximum, scale = run.samples, run.maximum, run.scale
-    weight = _finite(
-        config["task"]["lambda_compute"] if lambda_oracle is None else lambda_oracle
-    )
-    oracle_depths([0.0], weight)
     destination = run.directory / "analysis/depth_complexity" / split
     trajectories = load_predictions(run, device, batch_size, overwrite)
 
@@ -84,16 +77,15 @@ def analyze_run(
     for sample in sorted(samples):
         record = trajectories[sample]
         errors = [record["errors"][k] for k in range(1, maximum + 1)]
-        best, cost = oracle_depths(errors, weight)
+        best = oracle_depth(errors)
         oracle_rows.append({
             **provenance, "sample_id": sample, "normalization": config["task"]["normalization"],
-            "target_scale": scale, "lambda_oracle": weight, "max_depth": maximum,
-            "oracle_depth": best, "cost_oracle_depth": cost,
-            "min_error": errors[best - 1], "cost_oracle_error": errors[cost - 1],
+            "target_scale": scale, "max_depth": maximum,
+            "oracle_depth": best, "min_error": errors[best - 1],
         })
     oracle_path = destination / "oracle.csv"
     if overwrite or not oracle_path.exists():
-        write_oracles(prediction_path, checkpoint_path, oracle_path, weight, overwrite)
+        write_oracles(prediction_path, checkpoint_path, oracle_path, overwrite=overwrite)
     _checked(oracle_path, lambda: _compare_table(oracle_path, oracle_rows))
 
     merged = [
@@ -116,7 +108,7 @@ def analyze_run(
         }
     summary = {
         **provenance, **policy, "normalization": config["task"]["normalization"],
-        "target_scale": scale, "lambda_oracle": weight, "max_depth": maximum,
+        "target_scale": scale, "max_depth": maximum,
         "sample_count": len(merged), "depths": distributions,
         "agreement": {
             f"{left}__{right}": sum(row[left] == row[right] for row in merged) / len(merged)

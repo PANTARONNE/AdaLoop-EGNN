@@ -46,7 +46,7 @@ def run_fixture(tmp_path, monkeypatch, samples, adaptive_config):
             "model": {"weight_tying": True, "execution": {
                 "name": "adaptive", "depth": 3, "threshold": 0.5, "inference_rule": "cdf",
             }},
-            "task": {"supervision": "adaptive", "normalization": "mad", "lambda_compute": 0.9},
+            "task": {"supervision": "adaptive", "normalization": "mad"},
         },
         "task": {"target": "mu", "unit": "D", "transform": {"scale": 2.0}},
         "metadata": {"run_id": "fixture-run", "split_id": "fixture-split"},
@@ -70,7 +70,7 @@ def run_fixture(tmp_path, monkeypatch, samples, adaptive_config):
                     "split_id": "fixture-split", "split": split, "sample_id": samples[i].sample_id,
                     "property": "mu", "unit": "D", "supervision": "adaptive",
                     "train_depth": 3, "weight_tying": True, "seed": 0,
-                    "execution_mode": "diagnostic", "lambda_compute": 0.9,
+                    "execution_mode": "diagnostic",
                     "inference_rule": "cdf", "threshold": 0.5,
                     "readout_depth": depth, "y_true": 0.0, "y_pred": error,
                     "halt_depth": 2 if i == 0 else 1, "executed_depth": 3, "valid_depth": True,
@@ -92,20 +92,23 @@ def run_fixture(tmp_path, monkeypatch, samples, adaptive_config):
     return run, calls
 
 
-def test_all_results_cache_repair_and_weight_override(run_fixture, capsys):
+def test_all_results_cache_repair_and_overwrite(run_fixture, capsys):
     run, calls = run_fixture
     assert cli["main"](["--run-dir", str(run)]) == 0
     assert "N=2" in capsys.readouterr().out
     output = run / "analysis/depth_complexity/validation"
     rows = read_csv(output / "depth_complexity.csv")
     assert [tuple(int(row[key]) for key in analysis.DEPTHS) for row in rows] == [
-        (3, 1, 2), (1, 1, 1),
+        (3, 2), (1, 1),
     ]
     summary = json.loads((output / "summary.json").read_text())
-    assert summary["lambda_oracle"] == 0.9
+    removed = {"lambda_compute", "lambda_oracle", "cost_oracle_depth", "cost_oracle_error"}
+    assert not removed & rows[0].keys()
+    assert not removed & summary.keys()
+    assert set(summary["depths"]) == {"oracle_depth", "halt_depth"}
     assert summary["depths"]["oracle_depth"]["distinct_depths"] == 2
     assert summary["depths"]["oracle_depth"]["proportions"]["3"] == 0.5
-    assert set(summary["agreement"].values()) == {0.5}
+    assert summary["agreement"] == {"oracle_depth__halt_depth": 0.5}
     original = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in output.iterdir()}
     analysis.analyze_run(run)
     assert calls == {"predict": 1, "load": 1}
@@ -117,11 +120,18 @@ def test_all_results_cache_repair_and_weight_override(run_fixture, capsys):
     analysis.analyze_run(run)
     assert calls == {"predict": 1, "load": 1}
     assert (output / "oracle.csv").read_bytes() == original[output / "oracle.csv"][0]
-    with pytest.raises(ValueError, match="--overwrite"):
-        analysis.analyze_run(run, lambda_oracle=0.0)
-    updated = analysis.analyze_run(run, lambda_oracle=0.0, overwrite=True)
+    updated = analysis.analyze_run(run, overwrite=True)
     assert calls == {"predict": 2, "load": 2}
-    assert updated["agreement"]["oracle_depth__cost_oracle_depth"] == 1.0
+    assert updated == summary
+
+
+def test_cli_rejects_removed_cost_option(run_fixture, capsys):
+    run, calls = run_fixture
+    with pytest.raises(SystemExit) as error:
+        cli["main"](["--run-dir", str(run), "--lambda-oracle", "0"])
+    assert error.value.code == 2
+    assert "unrecognized arguments: --lambda-oracle" in capsys.readouterr().err
+    assert calls == {"predict": 0, "load": 0}
 
 
 @pytest.mark.parametrize("corruption", [
@@ -175,8 +185,7 @@ def test_bad_run_checkpoint_manifest_and_arguments(run_fixture):
     run, _ = run_fixture
     with pytest.raises(FileNotFoundError, match="best.pt"):
         analysis.analyze_run(run / "absent")
-    for kwargs in ({"split": "train"}, {"batch_size": 0}, {"lambda_oracle": -1},
-                   {"lambda_oracle": float("nan")}):
+    for kwargs in ({"split": "train"}, {"batch_size": 0}):
         with pytest.raises(ValueError):
             analysis.analyze_run(run, **kwargs)
     checkpoint = run / "checkpoints/best.pt"
@@ -213,7 +222,7 @@ def test_scatter_colors_offsets_ticks_and_vector_exports(run_fixture, metric, tm
     fig, ax = plot["make_figure"](metadata, columns, metric)
     other, other_ax = plot["make_figure"](metadata, columns, metric)
     try:
-        assert len(ax.collections) == 3
+        assert len(ax.collections) == 2
         assert not fig.texts
         assert ax.get_title() == ""
         labels = [
@@ -259,8 +268,9 @@ def test_scatter_colors_offsets_ticks_and_vector_exports(run_fixture, metric, tm
     assert not any("Checkpoint:" in (text.text or "") for text in texts)
     assert svg.findall(".//svg:use", ns)
     assert not svg.findall(".//svg:image", ns)
-    for color in ("#c30078", "#4370b4", "#529f9a"):
+    for color in ("#c30078", "#529f9a"):
         assert color in paths[0].read_text().lower()
+    assert "#4370b4" not in paths[0].read_text().lower()
     with Image.open(paths[1]) as image:
         assert image.size == (2550, 1800)
         assert image.info["dpi"][0] == pytest.approx(300, abs=0.1)
@@ -335,11 +345,11 @@ def test_depth_histogram_proportions_and_panels(run_fixture, distribution_plot):
     before = {key: value.copy() for key, value in columns.items()}
     fig, axes = distribution_plot["make_figure"](metadata, columns)
     try:
-        assert not fig.texts and len(axes) == 3
-        assert [ax.get_xlabel() for ax in axes] == ["", "", "Depth"]
+        assert not fig.texts and len(axes) == 2
+        assert [ax.get_xlabel() for ax in axes] == ["", "Depth"]
         assert axes[0].get_position().y0 > axes[1].get_position().y0
-        assert axes[1].get_position().y0 > axes[2].get_position().y0
         fig.canvas.draw()
+        assert axes[-1].xaxis.label.get_window_extent().y0 >= 0
         for ax, (key, label, color, *_) in zip(
             axes, distribution_plot["SERIES"], strict=True
         ):
@@ -347,7 +357,7 @@ def test_depth_histogram_proportions_and_panels(run_fixture, distribution_plot):
             assert ax.get_ylabel() == "Molecule proportion"
             assert ax.get_shared_x_axes().joined(ax, axes[-1])
             assert ax.get_xlim() == axes[-1].get_xlim()
-            expected_upper = 1.1 if key == "cost_oracle_depth" else 0.6
+            expected_upper = 0.6
             assert ax.get_ylim() == pytest.approx((0, expected_upper))
             np.testing.assert_allclose(
                 ax.get_yticks(), np.arange(round(expected_upper * 10) + 1) / 10,
@@ -377,10 +387,10 @@ def test_depth_histogram_proportions_and_panels(run_fixture, distribution_plot):
             texts = [ax.xaxis.label, ax.yaxis.label, *ax.get_xticklabels(),
                      *ax.get_yticklabels(), *ax.get_legend().get_texts()]
             assert all(text.get_fontfamily() == ["Arial"] for text in texts)
-        assert not axes[0].get_xticklabels() and not axes[1].get_xticklabels()
+        assert not axes[0].get_xticklabels()
         assert axes[-1].get_xticklabels()
         assert axes[0].containers[0][1].get_height() == 0
-        assert axes[1].containers[0][1].get_height() == 0
+        assert axes[1].containers[0][2].get_height() == 0
         for key in columns:
             np.testing.assert_array_equal(before[key], columns[key])
     finally:
@@ -406,7 +416,7 @@ def test_depth_histogram_cli_exports(run_fixture, distribution_plot, tmp_path):
     assert texts and all("Arial" in text.attrib.get("style", "") for text in texts)
     assert not svg.findall(".//svg:image", ns)
     with Image.open(destination / "depth_distribution.png") as image:
-        assert image.size == (2550, 2700)
+        assert image.size == (2550, 1800)
         assert image.info["dpi"][0] == pytest.approx(300, abs=0.1)
         image.verify()
     assert source.read_bytes() == original

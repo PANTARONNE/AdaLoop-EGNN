@@ -8,17 +8,17 @@ import matplotlib
 import numpy as np
 
 if __package__:
-    from .depthComplexity import SERIES, _ensure_arial
+    from .depthComplexity import _ensure_arial
 else:
-    from depthComplexity import SERIES, _ensure_arial
+    from depthComplexity import _ensure_arial
 
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import PercentFormatter  # noqa: E402
 
-COLOR = SERIES[1][2]
+COLOR = "#4370B4"
 METADATA = (
     "checkpoint_id", "split_id", "split", "property", "unit", "supervision",
-    "run_id", "seed", "weight_tying", "execution_mode", "lambda_compute",
+    "run_id", "seed", "weight_tying", "execution_mode",
     "inference_rule", "threshold", "max_depth", "sample_count", "error_metric",
     "error_units", "comparison", "population", "predictions_hash", "split_manifest_hash",
 )
@@ -51,8 +51,8 @@ def read_table(path):
     }.items():
         if metadata[key] != expected:
             raise ValueError(f"Unexpected analysis protocol: {key}")
-    weight, threshold = float(metadata["lambda_compute"]), float(metadata["threshold"])
-    if not np.isfinite([weight, threshold]).all() or weight < 0 or not 0 < threshold <= 1:
+    threshold = float(metadata["threshold"])
+    if not np.isfinite(threshold) or not 0 < threshold <= 1:
         raise ValueError("Invalid adaptive policy settings")
     rows.sort(key=lambda row: int(row["depth"]))
     if [int(row["depth"]) for row in rows] != list(range(1, maximum)):

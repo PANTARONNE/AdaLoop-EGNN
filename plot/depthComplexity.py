@@ -20,12 +20,11 @@ COMPLEXITIES = {
 }
 SERIES = (
     ("oracle_depth", "Error-optimal depth", "#C30078", "o", -0.18),
-    ("cost_oracle_depth", "Cost-optimal depth", "#4370B4", "^", 0.0),
     ("halt_depth", "Model halt depth", "#529F9A", "s", 0.18),
 )
 METADATA = (
     "checkpoint_id", "split_id", "split", "property", "unit", "supervision",
-    "normalization", "target_scale", "lambda_oracle", "lambda_compute", "threshold",
+    "normalization", "target_scale", "threshold",
     "inference_rule", "execution_mode", "max_depth", "run_id", "seed", "weight_tying",
 )
 
@@ -52,7 +51,7 @@ def read_table(path):
         raise ValueError("Invalid split or maximum depth")
     if metadata["execution_mode"] != "diagnostic" or metadata["inference_rule"] != "cdf":
         raise ValueError("Expected adaptive diagnostic analysis")
-    for key in ("target_scale", "lambda_oracle", "lambda_compute", "threshold"):
+    for key in ("target_scale", "threshold"):
         value = float(metadata[key])
         if not np.isfinite(value) or value < 0:
             raise ValueError(f"Invalid {key}")
@@ -106,7 +105,7 @@ def make_figure(metadata, columns, metric, jitter_seed=42, jitter=True):
 
 
 def _make_figure(metadata, columns, metric, jitter_seed=42, jitter=True):
-    """Three vectorized scatter collections; input arrays are never mutated."""
+    """Two vectorized scatter collections; input arrays are never mutated."""
     if metric not in COMPLEXITIES:
         raise ValueError(f"Unknown complexity: {metric}")
     if jitter_seed < 0:
@@ -134,7 +133,7 @@ def _make_figure(metadata, columns, metric, jitter_seed=42, jitter=True):
         ax.set_xlim(lower - 0.5, upper + 0.5)
     ax.grid(axis="y", alpha=0.20, zorder=0)
     ax.legend(
-        loc="lower left", bbox_to_anchor=(0, 1.015), ncol=3,
+        loc="lower left", bbox_to_anchor=(0, 1.015), ncol=2,
         frameon=False, fontsize=9, markerscale=2, borderaxespad=0,
     )
     return fig, ax
