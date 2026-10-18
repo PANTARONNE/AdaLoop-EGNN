@@ -1,6 +1,6 @@
 epochs: 1000
 device: auto
-gradient_clip: null
+gradient_clip: 10.0
 scheduler:
   name: cosine
   t_max: ${trainer.epochs}
