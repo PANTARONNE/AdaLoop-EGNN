@@ -134,12 +134,15 @@ def padded_inputs(samples, dtype):
 
 
 @pytest.mark.parametrize("depth", [1, 3, 7])
-def test_upstream_prediction_gradients_and_adam_update(
+def test_upstream_prediction_gradients_and_adam_update_without_message_norm(
     orig_config, batch, samples, monkeypatch, depth
 ):
     orig_config.model.hidden_dim = 16
     orig_config.model.execution.depth = depth
     model = build_egnn_orig(orig_config.model, "mu").double()
+    # The upstream oracle has no message normalization.
+    for step in model.operators.steps:
+        step.message_norm = torch.nn.Identity()
     reference = reference_class(monkeypatch)(
         15, 0, 16, n_layers=depth, attention=True, node_attr=0
     ).double()

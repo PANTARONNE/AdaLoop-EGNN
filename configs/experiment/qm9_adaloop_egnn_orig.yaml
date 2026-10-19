@@ -17,5 +17,5 @@ task:
   supervision: adaptive
   normalization: mad
   # Explicit boundary remains unchanged on resume. Override with shorter training.
-  warmup_epochs: 200
+  warmup_epochs: 300
 experiment_name: qm9_${task.target}_adaloop_orig_k${model.execution.depth}_s${seed}

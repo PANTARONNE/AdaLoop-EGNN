@@ -1,8 +1,8 @@
 """QM9 EGNN from vgsatorras/egnn, adapted to packed graphs.
 
 Reference: e9ca6c0c3e1d30a7598efbd66034121b4af8dccc, qm9/models.py and models/gcl.py.
-See third_party/EGNN-LICENSE.txt. Padding and masked edges are omitted; real-node
-messages, residual updates and readout are unchanged. Coordinates remain fixed.
+See third_party/EGNN-LICENSE.txt. Padding and masked edges are omitted; aggregated
+messages use LayerNorm before the node update. Coordinates remain fixed.
 """
 
 from dataclasses import dataclass
@@ -56,6 +56,7 @@ class EGNNOrigStep(nn.Module):
             nn.Linear(2 * hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim)
         )
         self.att_mlp = nn.Sequential(nn.Linear(hidden_dim, 1), nn.Sigmoid())
+        self.message_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, state, graph):
         h, x = state.node_features, state.positions
@@ -64,6 +65,7 @@ class EGNNOrigStep(nn.Module):
         messages = self.edge_mlp(torch.cat((h[row], h[col], radial), dim=1))
         messages = messages * self.att_mlp(messages)
         pooled = aggregate(messages, row, h.size(0), "sum")
+        pooled = self.message_norm(pooled)
         next_h = h + self.node_mlp(torch.cat((h, pooled), dim=1))
         return EGNNOrigState(next_h, x, state.edge_index)
 
