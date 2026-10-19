@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - qm9_loop_egnn_orig
+  - qm9_loop_egnn
   - _self_
 
 model:
@@ -18,4 +18,4 @@ task:
   normalization: mad
   # Explicit boundary remains unchanged on resume. Override with shorter training.
   warmup_epochs: 300
-experiment_name: qm9_${task.target}_adaloop_orig_k${model.execution.depth}_s${seed}
+experiment_name: qm9_${task.target}_adaloop_k${model.execution.depth}_s${seed}

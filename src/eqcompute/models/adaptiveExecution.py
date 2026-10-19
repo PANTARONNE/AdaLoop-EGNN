@@ -1,4 +1,4 @@
-"""Shared Orig execution: random-depth warm-up, exact expectation, or online exit."""
+"""Shared EGNN execution: random-depth warm-up, exact expectation, or online exit."""
 
 import math
 

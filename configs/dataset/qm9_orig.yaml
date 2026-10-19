@@ -1,7 +1,0 @@
-name: qm9_orig
-root: data/qm9_orig
-subtract_thermo: true
-# Optional limits for smoke tests only; full runs use the fixed official split.
-train_limit: null
-validation_limit: null
-test_limit: null

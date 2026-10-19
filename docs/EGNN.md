@@ -1,10 +1,10 @@
-# QM9 EGNNOrig
+# QM9 EGNN
 
-模型：`src/eqcompute/models/backbones/EGNNOrig.py`。
+模型：`src/eqcompute/models/backbones/EGNN.py`。
 当前数据：`src/eqcompute/data/QM9.py`，直接读取本地 PyG QM9 缓存。
-入口：`configs/experiment/qm9_egnn_orig.yaml`。
-共享参数入口：`qm9_loop_egnn_orig`；自适应入口：`qm9_adaloop_egnn_orig`。
-配置名称中的 orig 指 EGNNOrig 消息传播骨架。
+入口：`configs/experiment/qm9_egnn.yaml`。
+不传 `experiment` 时默认使用同一基线。
+共享参数入口：`qm9_loop_egnn`；自适应入口：`qm9_adaloop_egnn`。
 
 **模型来源与范围**
 
@@ -16,7 +16,7 @@
 - 消息门控、sum 聚合、残差 MLP、SiLU，坐标固定。
 - 节点 MLP、sum pooling、共享图预测头；基线默认 final MAE 监督。
 - 基线默认 7 层、128 隐藏维度；Loop 只注册一个共享 step。
-- AdaLoop 默认 Kmax=12，单性质训练与停止机制见 [AdaLoop 说明](AdaLoopEGNN.md)。
+- AdaLoop 默认 Kmax=24，单性质训练与停止机制见 [AdaLoop 说明](AdaLoopEGNN.md)。
 
 packed graph 在真实节点上的预测、梯度和 Adam 更新已与固定版本的官方 padded 模型
 对照验收。当前数据和训练调度采用本项目协议，不能将结果标作原论文数据流程的逐项复现。
@@ -32,11 +32,11 @@ data/qm9/
 ```
 
 固定深度、Loop、诊断和 AdaLoop 的配置继承 `dataset=qm9`，默认根目录 `data/qm9`。
-无需为这些入口另行下载 XYZ、排除名单或 atomref，也不会从旧 PyG 缓存生成 qm9Orig.pt。
+数据适配器仅使用 PyG QM9 的数据接口与缓存。
 如数据位于其他目录，设置 `dataset.root=/path/to/qm9`。
 
 标签沿用 PyG 的 19 个目标定义，训练默认 mu。PyG 输入特征 x 和化学键不替代模型自己的
-15 维原子编码及完全传播图；EGNNOrig 从 z、pos 构造输入。
+15 维原子编码及完全传播图；EGNN 从 z、pos 构造输入。
 
 默认划分为 110000 train / 10000 validation / remaining test，split_seed=42。
 训练 seed 不改变划分。sample ID 为 `qm9:<PyG 原始 idx>`，完整分组记录在 split_ids.json。
@@ -63,23 +63,23 @@ U0 与 PyG 的 U0_atom 是不同目标，不将二者隐式互换。
 在已激活项目环境的 WSL Bash 中：
 
 ```bash
-python scripts/train.py experiment=qm9_egnn_orig task.target=mu trainer.device=cuda:0
-python scripts/train.py experiment=qm9_loop_egnn_orig task.target=mu \
+python scripts/train.py experiment=qm9_egnn task.target=mu trainer.device=cuda:0
+python scripts/train.py experiment=qm9_loop_egnn task.target=mu \
   model.execution.depth=8 trainer.device=cuda:0
-python scripts/train.py experiment=qm9_adaloop_egnn_orig task.target=mu trainer.device=cuda:0
+python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu trainer.device=cuda:0
 ```
 
 AdaLoop 短程验收：
 
 ```bash
-python scripts/train.py experiment=qm9_adaloop_egnn_orig_smoke trainer.device=cuda:0
+python scripts/train.py experiment=qm9_adaloop_egnn_smoke trainer.device=cuda:0
 python scripts/smokeAdaLoop.py --data-root data/qm9 --device cuda:0
 ```
 
 固定基线短程验收：
 
 ```bash
-python scripts/train.py experiment=qm9_egnn_orig trainer.device=cuda:0 \
+python scripts/train.py experiment=qm9_egnn trainer.device=cuda:0 \
   trainer.epochs=3 dataset.subset_size=192 \
   dataset.train_size=128 dataset.val_size=32 dataset.test_size=32
 ```
@@ -93,7 +93,7 @@ cosine 在每 epoch 训练和验证完成后调用一次；metrics.csv 记录该
 ```bash
 python scripts/sweepDepth.py \
   --gpus 0,1,2,3 --depths 2,4,6,7,8,10,12 --seeds 0,1,2 \
-  --weight-tying true -- experiment=qm9_loop_egnn_orig task.target=mu
+  --weight-tying true -- experiment=qm9_loop_egnn task.target=mu
 python scripts/evalDepth.py --sweep-dir outputs/_depth_sweeps/<batch> --device cuda:0
 ```
 
@@ -110,5 +110,5 @@ python -m ruff check src tests scripts
 ```
 
 测试覆盖官方模型计算对照、当前 PyG 配置到训练/预测的链路、MAD/standard 切换、
-权重共享、对称性、调度、恢复和结果汇总。历史 XYZ 适配器及其离线测试仍保留在源码中，
-当前默认入口使用本地 PyG 数据。没有为这次切换建立原数据实验配置的备份副本。
+权重共享、对称性、调度、恢复和结果汇总。当前源码仅保留 PyG QM9 数据适配器，
+训练和预测测试通过小规模 PyG 测试数据验证，不下载数据或改写已有缓存。

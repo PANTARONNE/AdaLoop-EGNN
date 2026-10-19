@@ -1,9 +1,9 @@
 # @package _global_
 defaults:
   - override /dataset: qm9
-  - override /model: egnn_orig
+  - override /model: egnn
   - override /optimizer: adam
-  - override /trainer: egnn_orig
+  - override /trainer: egnn
 
 loader:
   batch_size: 96

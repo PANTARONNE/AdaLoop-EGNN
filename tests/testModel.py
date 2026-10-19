@@ -5,7 +5,6 @@ import torch
 
 from eqcompute.contracts import PropertyContext
 from eqcompute.models.execution import FixedDepthExecution
-from eqcompute.models.geometry import radius_edges
 from eqcompute.models.iterative import build_egnn
 from eqcompute.models.trace import TraceSpec
 
@@ -38,7 +37,7 @@ def test_sharing_parameter_count_and_gradients(config, batch):
     model(batch.graph, PropertyContext("mu")).prediction.sum().backward()
     handle.remove()
     assert len(calls) == 5
-    assert model.operators.at(1).message[0].weight.grad.abs().sum() > 0
+    assert model.operators.at(1).edge_mlp[0].weight.grad.abs().sum() > 0
     config.model.weight_tying = False
     model = build_egnn(config.model, "mu")
     assert model.operators.at(1) is not model.operators.at(2)
@@ -117,9 +116,11 @@ def test_permutation_batch_isolation_and_empty_neighbors(config, batch, samples)
     torch.testing.assert_close(baseline, model(permuted, context).prediction)
     alone = collate_molecules([samples[0]])
     torch.testing.assert_close(baseline[:1], model(alone.graph, context).prediction)
-    edges = radius_edges(graph, config.model.graph.cutoff)
+    edges = model.initialize(graph).edge_index
     assert torch.equal(graph.batch_index[edges[0]], graph.batch_index[edges[1]])
     assert not (edges[0] == edges[1]).any()
+    sizes = torch.bincount(graph.batch_index)
+    assert edges.size(1) == int((sizes * (sizes - 1)).sum())
     singleton = collate_molecules([samples[2]])
     assert model.initialize(singleton.graph).edge_index.shape == (2, 0)
     assert torch.isfinite(model(singleton.graph, context).prediction).all()

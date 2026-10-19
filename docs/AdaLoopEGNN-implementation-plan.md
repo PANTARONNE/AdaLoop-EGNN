@@ -1,5 +1,9 @@
 # AdaLoop-EGNN 实现计划：复用 EGNNOrig
 
+> 2026-10-19 清理说明：第一步已移除旧半径图 EGNN 与 QM9Orig XYZ 预处理，
+> 第二步已将保留的 EGNNOrig 骨架统一更名为 EGNN，数据使用 PyG QM9。
+> 下文保留当时的名称与设计，不作为现有文件清单。当前入口见 [EGNN.md](EGNN.md)。
+
 > 历史设计记录（2026-10-12）。自 2026-10-16 起，当前实现已移除训练计算成本项、
 > 成本权重配置及成本最优 Oracle；下文相关公式与参数仅记录原设计。
 > 当前行为以 [AdaLoopEGNN.md](AdaLoopEGNN.md) 为准。

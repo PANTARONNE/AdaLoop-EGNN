@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - qm9_adaloop_egnn_orig
+  - qm9_adaloop_egnn
   - _self_
 
 model:

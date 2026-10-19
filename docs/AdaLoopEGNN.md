@@ -1,16 +1,16 @@
 # 单性质 AdaLoop-EGNN（M0–M3）
 
-消息传播使用原有 `EGNNOrigStep`，完全图、固定坐标、共享参数。没有改动
-`models/backbones/EGNNOrig.py`，原有 fixed / untied / tied 模型和 checkpoint 保持兼容。
+消息传播使用 `models/backbones/EGNN.py` 中的 `EGNNStep`，完全图、固定坐标、共享参数。
+固定深度基线支持独立参数和共享参数；AdaLoop 复用同一消息传播计算。
 本轮实现单性质模型，不包含 property embedding 或多性质联合训练。
 
 **范围与配置**
 
 | 配置 | 用途 |
 |---|---|
-| `qm9_loop_egnn_orig_diagnostic` | M0：共享参数、Kmax=12、所有深度等权 MAE 监督 |
-| `qm9_adaloop_egnn_orig` | 单性质自适应模型，hidden_dim=128、Kmax=12 |
-| `qm9_adaloop_egnn_orig_smoke` | 本地 PyG QM9 短程验收，hidden_dim=32、Kmax=4、3 epochs |
+| `qm9_loop_egnn_diagnostic` | M0：共享参数、Kmax=12、所有深度等权 MAE 监督 |
+| `qm9_adaloop_egnn` | 单性质自适应模型，hidden_dim=128、Kmax=24 |
+| `qm9_adaloop_egnn_smoke` | 本地 PyG QM9 短程验收，hidden_dim=32、Kmax=4、3 epochs |
 
 默认 `task.target=mu`、`task.normalization=mad`，归一化仅用训练标签拟合。
 可通过 `task.normalization=standard` 或 `none` 切换；对照实验需统一该设置。
@@ -18,17 +18,17 @@
 改变深度仍使用 `model.execution.depth`；自适应模型中该值表示 Kmax。
 
 固定深度、Loop、M0 诊断和 AdaLoop 均直接使用 `dataset=qm9`、`dataset.root=data/qm9`。
-已有 `processed/data_v3.pt` 可直接加载，无需另行准备 XYZ 或 atomref。配置名称中的 orig
-表示消息传播骨架 EGNNOrig。默认划分为 110000 train / 10000 validation / remaining test，
+已有 `processed/data_v3.pt` 可直接加载，无需另行准备 XYZ 或 atomref。
+默认划分为 110000 train / 10000 validation / remaining test，
 `dataset.split_seed=42`；所有基线需使用相同划分和标签处理。
 PyG 标签直接读取，不额外扣除原子参考值；zpve 为 eV，U0 是总能量目标。
-`qm9_egnn_orig` 和 `qm9_loop_egnn_orig` 仍默认 final 监督。
+`qm9_egnn` 和 `qm9_loop_egnn` 仍默认 final 监督。
 
 **Halting Controller 设计**
 
 设分子图 $b$ 有 $N_b$ 个节点，最大展开深度为 $K=K_{\max}$，第 $k$ 步节点特征为
 $h_{b,i}^{(k)}\in\mathbb{R}^{d}$。$h^{(0)}$ 是 initializer 输出；每一步先执行共享的
-`EGNNOrigStep`，再由共享 readout/head 得到该深度的归一化预测 $\hat y_{b,k}$，
+`EGNNStep`，再由共享 readout/head 得到该深度的归一化预测 $\hat y_{b,k}$，
 同时由 controller 判断是否停止。消息传播、readout/head 和 controller 的参数均跨深度共享，
 controller 不显式输入深度 $k$。
 
@@ -173,15 +173,15 @@ trace 的 depth 选择只控制 detached 表示快照。hard 不伪造未执行�
 在已激活项目环境的 WSL Bash 中：
 
 ```bash
-python scripts/train.py experiment=qm9_loop_egnn_orig_diagnostic task.target=mu
-python scripts/train.py experiment=qm9_adaloop_egnn_orig task.target=mu
-python scripts/train.py experiment=qm9_adaloop_egnn_orig task.normalization=standard
+python scripts/train.py experiment=qm9_loop_egnn_diagnostic task.target=mu
+python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu
+python scripts/train.py experiment=qm9_adaloop_egnn task.normalization=standard
 ```
 
 直接读取本地 QM9 缓存的短程训练：
 
 ```bash
-python scripts/train.py experiment=qm9_adaloop_egnn_orig_smoke trainer.device=cuda
+python scripts/train.py experiment=qm9_adaloop_egnn_smoke trainer.device=cuda
 ```
 
 M0 本轮仅验收代码，没有启动完整诊断实验。M1–M3 已用本地 PyG QM9 完成短程
@@ -203,7 +203,7 @@ warm-up 期间不选择 best.pt；此时允许从只有 last.pt 的目录恢复�
 按 CDF hard 输出的 validation MAE 选择 best.pt。训练恢复沿用原入口：
 
 ```bash
-python scripts/train.py experiment=qm9_adaloop_egnn_orig \
+python scripts/train.py experiment=qm9_adaloop_egnn \
   resume=outputs/<run>/checkpoints/last.pt
 ```
 
@@ -248,7 +248,7 @@ unit 列标记原目标单位。
 Oracle 使用标签，仅供分析，不能用于推理或 test 超参选择。
 
 结构指标包括总原子数、重原子数、等权几何中心回转半径（坐标单位 Å）、元素种类数和
-自然对数元素熵。暂不包含化学图直径、环数和可旋转键。Orig 完全图不能用于解释
+自然对数元素熵。暂不包含化学图直径、环数和可旋转键。EGNN 完全图不能用于解释
 化学图距离或局部传播范围。
 
 **验收**

@@ -1,4 +1,8 @@
 # @package _global_
+defaults:
+  - qm9_egnn
+  - _self_
+
 dataset:
   train_size: 128
   val_size: 32
@@ -6,7 +10,6 @@ dataset:
   subset_size: 192
 model:
   hidden_dim: 32
-  num_rbf: 8
   weight_tying: true
   execution:
     depth: 3

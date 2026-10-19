@@ -1,6 +1,0 @@
-name: egnn_orig
-hidden_dim: 128
-weight_tying: false
-execution:
-  name: fixed
-  depth: 7

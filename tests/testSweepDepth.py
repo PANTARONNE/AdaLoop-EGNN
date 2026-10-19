@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from hydra import compose, initialize_config_dir
 
+from eqcompute.factories import MODELS, construct
 from eqcompute.launching.GPUQueue import Job, gpu_devices, run_queue
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,11 +18,23 @@ CLI = runpy.run_path(str(ROOT / "scripts/sweepDepth.py"))
 BASE_ARGS = ["--gpus", "0,1", "--depths", "2,4", "--seeds", "0,7", "--weight-tying", "false"]
 
 
-def test_plan_cartesian_product_presets_and_output_paths(tmp_path, monkeypatch):
+@pytest.mark.parametrize("preset,batch_size,tied", [
+    ("qm9_smoke", 32, False),
+    ("qm9_egnn", 96, False),
+    ("qm9_loop_egnn", 96, False),
+    ("qm9_loop_egnn_diagnostic", 96, False),
+    ("qm9_adaloop_egnn", 96, True),
+    ("qm9_adaloop_egnn_smoke", 16, True),
+])
+def test_plan_cartesian_product_presets_and_output_paths(
+    tmp_path, monkeypatch, preset, batch_size, tied
+):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     output = tmp_path / "outputs with spaces"
+    arguments = BASE_ARGS.copy()
+    arguments[-1] = str(tied).lower()
     args = CLI["parse_args"](
-        BASE_ARGS + ["--", "experiment=qm9_smoke", f"output_root={json.dumps(str(output))}"]
+        arguments + ["--", f"experiment={preset}", f"output_root={json.dumps(str(output))}"]
     )
     jobs, devices, directory, _ = CLI["make_plan"](args)
     assert devices == ["0", "1"]
@@ -36,11 +49,12 @@ def test_plan_cartesian_product_presets_and_output_paths(tmp_path, monkeypatch):
             config = compose(config_name="config", overrides=job.command[3:])
             assert config.model.execution.depth == job.parameters["depth"]
             assert config.seed == job.parameters["seed"]
-            assert config.model.weight_tying is False  # Overrides the smoke preset's True.
+            assert config.model.weight_tying is tied  # The CLI takes precedence over the preset.
             assert config.trainer.device == "cuda:0"
-            assert config.loader.batch_size == 32  # Existing preset is still composed by Hydra.
+            assert config.loader.batch_size == batch_size
             assert Path(config.output_root) == job.output_root
             assert config.dataset.split_seed == 42
+            construct(MODELS, config.model.name, config.model, config.task.target)
 
 
 @pytest.mark.parametrize(

@@ -13,25 +13,25 @@ from eqcompute.analysis.oracleDepth import main as oracle_main
 from eqcompute.analysis.oracleDepth import oracle_depth, write_oracles
 from eqcompute.application import make_loader
 from eqcompute.evaluation.predictionWriter import file_hash, write_predictions
-from eqcompute.models.iterative import build_egnn_orig
+from eqcompute.models.iterative import build_egnn
 from eqcompute.tasks.regression import RegressionTask
 from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import save_checkpoint
 
 
-def test_diagnostic_preset_all_steps_gradients_and_orig_defaults(batch):
+def test_diagnostic_preset_all_steps_gradients_and_egnn_defaults(batch):
     with initialize_config_dir(
         config_dir=str(Path(__file__).resolve().parents[1] / "configs"), version_base="1.3"
     ):
         config = compose(config_name="config", overrides=[
-            "experiment=qm9_loop_egnn_orig_diagnostic", "model.hidden_dim=8",
+            "experiment=qm9_loop_egnn_diagnostic", "model.hidden_dim=8",
             "model.execution.depth=3",
         ])
-        original = compose(config_name="config", overrides=["experiment=qm9_egnn_orig"])
+        original = compose(config_name="config", overrides=["experiment=qm9_egnn"])
     assert original.task.supervision == "final"
     assert original.task.normalization == config.task.normalization == "mad"
     assert config.model.weight_tying
-    model = build_egnn_orig(config.model, "mu")
+    model = build_egnn(config.model, "mu")
     task = RegressionTask(config.task, 0, "D", TargetTransform())
     from eqcompute.models.trace import TraceSpec
 
@@ -74,7 +74,7 @@ def test_oracle_export_scale_provenance_missing_and_duplicate(
     config.model.execution.name = "fixed"
     config.task.name = "scalar_regression"
     config.task.supervision = "all_steps"
-    model = build_egnn_orig(config.model, "mu")
+    model = build_egnn(config.model, "mu")
     task = RegressionTask(config.task, 0, "D", TargetTransform(2., 2.))
     checkpoint = tmp_path / "checkpoints/best.pt"
     save_checkpoint(checkpoint, {

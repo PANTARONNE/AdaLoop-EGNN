@@ -5,13 +5,13 @@ import torch
 
 from eqcompute.application import make_loader
 from eqcompute.evaluation.adaptiveWriter import write_adaptive_predictions
-from eqcompute.models.iterative import build_egnn_orig
+from eqcompute.models.iterative import build_egnn
 from eqcompute.tasks.adaptiveRegression import AdaptiveRegressionTask
 from eqcompute.tasks.targetTransform import TargetTransform
 
 
 def test_hard_and_diagnostic_exports(adaptive_config, samples, tmp_path):
-    model = build_egnn_orig(adaptive_config.model, "mu")
+    model = build_egnn(adaptive_config.model, "mu")
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform(2.5, 2.))
     loader = make_loader(samples, adaptive_config.loader)
     provenance = dict(run_id="r", checkpoint_id="hash", split_id="split", split="test",

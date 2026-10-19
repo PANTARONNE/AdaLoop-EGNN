@@ -10,7 +10,7 @@ class GraphInputs:
     positions: Tensor
     batch_index: Tensor
     num_graphs: int
-    # Optional supplied graph; the radius-graph EGNN builds its own topology.
+    # Optional supplied graph; EGNN builds its own complete molecular topology.
     edge_index: Tensor | None = None
     edge_attr: Tensor | None = None
 

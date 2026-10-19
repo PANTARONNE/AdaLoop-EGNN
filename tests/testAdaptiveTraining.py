@@ -6,7 +6,7 @@ from omegaconf import OmegaConf
 
 from eqcompute.application import make_loader
 from eqcompute.metrics.regression import RegressionMetrics
-from eqcompute.models.iterative import build_egnn_orig
+from eqcompute.models.iterative import build_egnn
 from eqcompute.tasks.adaptiveRegression import AdaptiveRegressionTask
 from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import load_checkpoint, seed_everything
@@ -16,7 +16,7 @@ from eqcompute.training.trainer import Trainer
 
 def assemble(config, samples, directory):
     seed_everything(config.seed)
-    model = build_egnn_orig(config.model, config.task.target)
+    model = build_egnn(config.model, config.task.target)
     task = AdaptiveRegressionTask(config.task, 0, "D", TargetTransform(2.5, 1.0))
     optimizer = build_optimizer(config.optimizer, model.parameters())
     generator = torch.Generator().manual_seed(config.seed)
@@ -63,7 +63,7 @@ def test_resume_across_warmup_and_adaptive(adaptive_config, samples, tmp_path, p
 
 
 def test_warmup_coverage_no_controller_update_and_adaptive_updates(adaptive_config, batch):
-    model = build_egnn_orig(adaptive_config.model, "mu")
+    model = build_egnn(adaptive_config.model, "mu")
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     task.on_epoch_start(model, 0)
@@ -93,7 +93,7 @@ def test_warmup_coverage_no_controller_update_and_adaptive_updates(adaptive_conf
 
 def test_small_adaptive_problem_learns(adaptive_config, batch):
     adaptive_config.task.warmup_epochs = 0
-    model = build_egnn_orig(adaptive_config.model, "mu")
+    model = build_egnn(adaptive_config.model, "mu")
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
     optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
     initial = task.run(model, batch, "train").loss.item()

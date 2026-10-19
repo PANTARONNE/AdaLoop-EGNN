@@ -1,5 +1,84 @@
 # 验证记录
 
+**2026-10-19：工作区清理第二步（统一命名为 EGNN）**
+
+用户确认第一步后执行。逐项检查源文件存在、目标文件不存在，再重命名 10 个文件：
+
+| 原名称 | 当前名称 |
+|---|---|
+| `src/eqcompute/models/backbones/EGNNOrig.py` | `src/eqcompute/models/backbones/EGNN.py` |
+| `configs/model/egnn_orig.yaml` | `configs/model/egnn.yaml` |
+| `configs/trainer/egnn_orig.yaml` | `configs/trainer/egnn.yaml` |
+| `configs/experiment/qm9_egnn_orig.yaml` | `configs/experiment/qm9_egnn.yaml` |
+| `configs/experiment/qm9_loop_egnn_orig.yaml` | `configs/experiment/qm9_loop_egnn.yaml` |
+| `configs/experiment/qm9_loop_egnn_orig_diagnostic.yaml` | `configs/experiment/qm9_loop_egnn_diagnostic.yaml` |
+| `configs/experiment/qm9_adaloop_egnn_orig.yaml` | `configs/experiment/qm9_adaloop_egnn.yaml` |
+| `configs/experiment/qm9_adaloop_egnn_orig_smoke.yaml` | `configs/experiment/qm9_adaloop_egnn_smoke.yaml` |
+| `tests/testEGNNOrig.py` | `tests/testEGNN.py` |
+| `docs/EGNNOrig.md` | `docs/EGNN.md` |
+
+同步更新类名、构建函数 `build_egnn`、模型注册名 `egnn`、配置继承、测试变量和名称、
+smoke 脚本及现用文档。AdaLoop 输出目录模板改为 `adaloop_k...`，固定模型模板随
+`model.name=egnn` 自动更新。历史正文保留原名，现用文档链接指向新文件。
+旧入口不提供兼容层，已有 checkpoint、数据缓存和实验结果保留原样。
+
+完整 `tests` 测试：**189 passed、1 skipped**；唯一跳过项为未设置 `QM9_ROOT` 的
+真实数据 integration 测试，CUDA 测试通过。Ruff（src/tests/scripts/plot）及
+`git diff --check` 通过。活动代码、配置、脚本和现用文档中未发现 EGNNOrig / egnn_orig
+残留引用。
+
+改名前后对照：默认配置及全部 6 个实验的解析结果在应用名称映射后逐项一致，
+包含训练超参数。数值检查使用 hidden_dim=8、depth=3 的模型和含单原子分子的批次，
+加载相同权重，核对参数键、参数量、完整预测轨迹、表示、坐标、梯度，以及 AdaLoop
+full / hard / diagnostic 的停止结果，**rtol=0、atol=0 全部通过**。
+临时对照脚本及基准保存在忽略的 `build/` 中，不进入正式测试或训练入口。
+骨架源码除 EGNNOrig → EGNN 名称替换外逐字一致。
+
+保护检查：PyG 适配器、两份官方参考源码、许可证和实验 PDF 的 5 项 SHA256 未变；
+`data/`、`outputs/` 下全部 448 个文件的清单、大小及修改时间与第二步执行前一致。
+未启动真实数据训练。当前入口见 [EGNN 使用说明](docs/EGNN.md)。
+
+**2026-10-19：工作区清理第一步（保留 EGNNOrig 名称）**
+
+执行前工作区无未提交改动。按核实的绝对路径逐文件删除，未使用通配符或递归删除。
+实际删除清单如下，路径均相对于仓库根目录：
+
+- `src/eqcompute/models/backbones/EGNN.py`
+- `configs/model/egnn.yaml`
+- `src/eqcompute/data/QM9Orig.py`
+- `configs/dataset/qm9_orig.yaml`
+- `configs/experiment/qm9_egnn_depth.yaml`
+- `configs/experiment/qm9_loop_egnn_depth.yaml`
+- `configs/experiment/qm9_loop_all_steps.yaml`
+
+移除旧工厂注册、构建函数、半径构图、旧 readout 和 XYZ 专属测试。
+通用模型、训练、CUDA 和评估测试迁移至 EGNNOrig；依赖旧 XYZ 的训练、预测、调度及
+checkpoint 恢复测试改用内存中的小规模 PyG 测试数据，经过保留的 QM9 adapter。
+保留官方预测、梯度和 Adam 更新对照。补充默认配置等于 EGNNOrig 基线的检查，
+以及全部 6 个保留实验的配置构建和 depth × seed sweep 计划检查。
+
+默认入口改为现有 `qm9_egnn_orig` 基线：7 层、MAD、Adam、性质学习率、cosine 调度；
+`qm9_smoke` 继承该基线，保留 192 样本、hidden_dim=32、K=3、3 epochs。
+Loop、M0 诊断和 AdaLoop 的模型计算与训练参数未改动。
+现用 README 和使用说明同步更新；历史设计及以下验收记录保留当时名称。
+
+清理前完整 pytest：**2 failed、184 passed、1 skipped**。两项已有失败均为
+`test_original_config_and_sweep_plan` 对 gradient_clip 的过期断言；实际配置为 10.0，
+测试要求 None。迁移测试时修正断言为 10.0，保留配置不变。清理前 Ruff 通过。
+
+清理后在已有 WSL Conda 环境执行 `python -m pytest -q -rs`：
+**189 passed、1 skipped**，耗时 42.02 秒。跳过项为未设置 `QM9_ROOT` 的真实数据
+integration 测试，CUDA 测试已通过。另有 1 条 PyG 上游弃用警告。
+`python -m ruff check src tests scripts plot` 与 `git diff --check` 通过。
+活动代码、配置、脚本与现用文档未发现被删除组件的失效引用。
+
+保护检查：EGNNOrig 骨架、PyG `QM9.py`、两份官方参考源码、许可证和实验 PDF 的
+SHA256 与清理前一致。未删除或改写 `data/`、`outputs/`；训练与导出测试使用临时目录，
+未启动真实数据训练。第一步完成后暂停，第二步统一重命名须经用户确认后执行。
+
+> 以下记录保留各日期的历史状态；其中旧 EGNN、QM9Orig、旧配置名及旧测试结果
+> 不代表当前可用接口。当前入口见 [EGNN 使用说明](docs/EGNN.md)。
+
 **2026-10-16：移除 computation cost**
 
 训练仅保留停止概率加权预测误差；删除成本权重配置、日志和导出字段，以及成本最优

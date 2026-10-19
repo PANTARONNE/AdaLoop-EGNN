@@ -1,14 +1,14 @@
 # Adaptive Equivariant Computation — Experiment 0
 
 当前实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测，
-以及基于 EGNNOrig 的单性质 AdaLoop（M0–M3）：逐深度诊断、Oracle、两阶段训练、
+以及基于 EGNN 的单性质 AdaLoop（M0–M3）：逐深度诊断、Oracle、两阶段训练、
 停止概率加权预测损失和实际提前退出。默认 MAD，可通过配置切换。用法见 [AdaLoop 说明](docs/AdaLoopEGNN.md)。
 不包含多性质条件化、QMugs、PaiNN 或晶体模型。
 
-EGNNOrig 骨架入口为 `experiment=qm9_egnn_orig`，与 Loop / AdaLoop 配置均直接使用
+默认训练与 `experiment=qm9_egnn` 使用同一 EGNN 基线，与 Loop / AdaLoop 配置均直接使用
 本地 PyG QM9 缓存 `data/qm9/processed/data_v3.pt`，采用每 epoch 结束后一次 cosine
-调度。数据划分、标签单位和模型来源见 [EGNNOrig 使用说明](docs/EGNNOrig.md)。
-共享参数循环实验使用 `experiment=qm9_loop_egnn_orig`；多卡扫描指定 `--weight-tying true`。
+调度。数据划分、标签单位和模型来源见 [EGNN 使用说明](docs/EGNN.md)。
+共享参数循环实验使用 `experiment=qm9_loop_egnn`；多卡扫描指定 `--weight-tying true`。
 
 ## WSL 环境
 
@@ -58,21 +58,22 @@ hidden_dim=32、K=3、3 epochs。其误差只用于检查流程，不是基准�
 完整单次训练和不同配置：
 
 ```bash
-python scripts/train.py experiment=qm9_egnn_depth
-python scripts/train.py experiment=qm9_loop_egnn_depth task.target=gap
-python scripts/train.py experiment=qm9_loop_all_steps
+python scripts/train.py experiment=qm9_egnn
+python scripts/train.py experiment=qm9_loop_egnn task.target=gap
+python scripts/train.py experiment=qm9_loop_egnn_diagnostic
 ```
 
 固定深度 sweep（会产生多个独立训练，不在 smoke 验证中自动启动）：
 
 ```bash
-python scripts/train.py -m experiment=qm9_egnn_depth \
+python scripts/train.py -m experiment=qm9_egnn \
   'model.execution.depth=1,2,3,4,6,8,10,12' \
   'model.weight_tying=false,true' 'seed=0,1,2'
 ```
 
-`experiment=qm9_egnn_depth` 对应 `configs/experiment/qm9_egnn_depth.yaml`。
-默认深度为 4；单次训练可用 `model.execution.depth=8` 覆盖，
+`experiment=qm9_egnn` 对应 `configs/experiment/qm9_egnn.yaml`。
+默认深度为 7，hidden_dim=128，采用 MAD、Adam、性质学习率和每 epoch cosine 调度；
+单次训练可用 `model.execution.depth=8` 覆盖，
 多卡扫描由 `sweepDepth.py --depths ...` 为每个任务设置深度。
 
 Hydra preset 只覆盖差异项，没有重复的 train_depthN.py。
@@ -93,7 +94,7 @@ python scripts/sweepDepth.py \
   --depths 1,2,3,4,6,8,10,12 \
   --seeds 0,1,2 \
   --weight-tying false -- \
-  experiment=qm9_egnn_depth task.target=mu
+  experiment=qm9_egnn task.target=mu
 ```
 
 Loop-EGNN 使用 `--weight-tying true`。其他训练设置继续通过 `--` 后的 Hydra overrides
@@ -148,7 +149,7 @@ outputs/_depth_sweeps/<UTC_timestamp>_<id>/
 
 ```bash
 python scripts/sweepDepth.py --gpus 0 --depths 4 --seeds 1 \
-  --weight-tying false -- experiment=qm9_egnn_depth task.target=mu
+  --weight-tying false -- experiment=qm9_egnn task.target=mu
 ```
 
 重跑创建新的批次与运行目录。需要从某个 `last.pt` 继续时，使用下文的单次训练恢复入口；
@@ -163,7 +164,9 @@ python scripts/sweepDepth.py --gpus 0 --depths 4 --seeds 1 \
 用于单个 checkpoint 的预测随深度变化实验。这是另一种训练协议，不能与 final 混报。
 两者均无 halting 或随机深度 warm-up。
 
-默认目标为 mu。支持通过配置选择 PyG QM9 的 19 个目标；推荐先比较 mu、alpha、gap、U0。
+默认目标为 mu。数据适配器保留 PyG QM9 的 19 个目标；基线性质学习率表覆盖
+mu、alpha、homo、lumo、gap、r2、zpve、U0、U、H、G、Cv。选择其他目标时需显式设置
+`optimizer.learning_rate`。推荐先比较 mu、alpha、gap、U0。
 单目标 checkpoint 拒绝其他 property context；预留参数不意味着已经实现多目标模型。
 
 默认数据划分为 110000 / 10000 / remaining，split_seed=42；训练 seed 与划分 seed 分开。
@@ -187,26 +190,22 @@ Checkpoint -> 独立 predict -> CSV -> 离线 analysis
 
 - `contracts.py`：GraphInputs 与带标签的 SupervisedBatch 分开。
 - `data/`：QM9 adapter、稳定身份与持久化划分；不计算 loss。
-- `models/backbones/EGNN.py`：initializer 与一次 EGNN 更新。
+- `models/backbones/EGNN.py`：initializer、一次消息更新与节点解码读出。
 - `models/operators.py`：参数所有权；tied 仅注册一个 step，untied 使用独立 ModuleList。
 - `models/execution.py`：固定执行次数；不定义 loss。
-- `models/heads.py`：读出与带 property context 的共享预测头。
+- `models/heads.py`：带 property context 的共享预测头。
 - `tasks/`：目标变换、监督协议与 loss；不管理 optimizer。
 - `training/`：通用训练与 checkpoint；不读取 depth 或具体模型类型。
 - `metrics/`：按样本累计 MAE/RMSE，避免小尾批次被过度加权。
 - `evaluation/`：逐深度预测流式写盘。
 - `analysis/`：仅消费结果文件，不参与 Trainer。
 
-原有 `model.name=egnn` 实现是记录了变体细节的 EGNN，不声称严格复现原论文的 QM9 配置：
-原子序数 embedding；Gaussian RBF；有向 radius edges；mean message aggregation；
-特征残差和 LayerNorm；归一化相对向量、tanh 标量与 coordinate_scale=0.1 的坐标更新；
-默认 sum pooling 与共享标量 MLP head。
-
-radius graph 在 initialize 时由原始输入坐标构建，执行过程中拓扑不变。
-每步从当前 state.positions 重算距离和 RBF；cutoff 仅决定初始边集合，不在后续动态裁剪边。
-输入 positions 不被原地修改。化学键 edge_index/edge_attr 保留在输入中，但不直接用于 radius edges。
-按分子计算 cdist，没有邻居数截断，不依赖可选 CUDA 扩展；复杂度为每个分子 O(N²)，当前面向 QM9。
-未来大分子应替换构图函数；未来晶体还需专门的 cell/PBC/周期位移支持。
+当前唯一骨架为 `model.name=egnn`：H/C/N/O/F 的 15 维原子编码、分子内完全
+有向图（无自环）、距离平方、消息门控、sum 聚合与消息 LayerNorm、残差节点更新。
+坐标固定；节点解码 MLP 后 sum pooling，再经过共享标量预测头。
+化学键 edge_index/edge_attr 保留在输入中，传播图由骨架自行构建。
+完全图复杂度为每个分子 O(N²)，当前面向 QM9；模型来源与官方数值对照见
+[EGNN 使用说明](docs/EGNN.md)。数据与训练协议沿用本项目配置。
 
 直接操作单步：
 

@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - qm9_egnn
+  - _self_
+
+# Reuse one EGNNStep at every depth. This is a weight-tied experimental variant.
+model:
+  weight_tying: true

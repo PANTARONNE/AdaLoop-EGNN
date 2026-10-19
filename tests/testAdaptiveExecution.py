@@ -7,7 +7,7 @@ from torch import nn
 from eqcompute.contracts import PropertyContext
 from eqcompute.data.collate import collate_molecules
 from eqcompute.models.activeGraphs import select_graphs
-from eqcompute.models.iterative import build_egnn_orig
+from eqcompute.models.iterative import build_egnn
 from eqcompute.models.trace import TraceSpec
 
 
@@ -26,7 +26,7 @@ class SizeHazards(nn.Module):
 ])
 def test_compact_matches_full_and_skips_real_message_work(adaptive_config, batch, device):
     batch = batch.to(device)
-    model = build_egnn_orig(adaptive_config.model, "mu").to(device).eval()
+    model = build_egnn(adaptive_config.model, "mu").to(device).eval()
     model.execution.controller = SizeHazards()
     work = []
     hook = model.operators.at(1).register_forward_pre_hook(
@@ -48,7 +48,7 @@ def test_compact_matches_full_and_skips_real_message_work(adaptive_config, batch
 
 
 def test_controller_registered_shared_gradients_and_depth_capacity(adaptive_config, batch):
-    model = build_egnn_orig(adaptive_config.model, "mu")
+    model = build_egnn(adaptive_config.model, "mu")
     names = dict(model.named_parameters())
     assert any(name.startswith("execution.controller.") for name in names)
     output = model(batch.graph, PropertyContext("mu"))
@@ -61,11 +61,11 @@ def test_controller_registered_shared_gradients_and_depth_capacity(adaptive_conf
     assert model.operators.at(1) is model.operators.at(12)
     size = sum(p.numel() for p in model.parameters())
     adaptive_config.model.execution.depth = 12
-    assert sum(p.numel() for p in build_egnn_orig(adaptive_config.model, "mu").parameters()) == size
+    assert sum(p.numel() for p in build_egnn(adaptive_config.model, "mu").parameters()) == size
 
 
 def test_adaptive_symmetries_and_batch_isolation(adaptive_config, batch, samples):
-    model = build_egnn_orig(adaptive_config.model, "mu").double().eval()
+    model = build_egnn(adaptive_config.model, "mu").double().eval()
     graph = replace(batch.graph, positions=batch.graph.positions.double())
     rotation, _ = torch.linalg.qr(torch.randn(3, 3, dtype=torch.double))
     reflection = torch.diag(torch.tensor([-1., 1., 1.], dtype=torch.double))
@@ -96,7 +96,7 @@ def test_adaptive_symmetries_and_batch_isolation(adaptive_config, batch, samples
 
 
 def test_compaction_remaps_supplied_edges_and_preserves_state(adaptive_config, batch):
-    model = build_egnn_orig(adaptive_config.model, "mu")
+    model = build_egnn(adaptive_config.model, "mu")
     state = model.initialize(batch.graph)
     graph = replace(
         batch.graph, edge_index=state.edge_index,
@@ -115,7 +115,7 @@ def test_compaction_remaps_supplied_edges_and_preserves_state(adaptive_config, b
 
 def test_modes_do_not_mutate_policy_and_single_step(adaptive_config, batch):
     adaptive_config.model.execution.depth = 1
-    model = build_egnn_orig(adaptive_config.model, "mu").eval()
+    model = build_egnn(adaptive_config.model, "mu").eval()
     with torch.inference_mode():
         full = model(batch.graph, PropertyContext("mu"), execution_mode="diagnostic")
         hard = model(batch.graph, PropertyContext("mu"))
@@ -137,4 +137,4 @@ def test_invalid_adaptive_config(adaptive_config, field, value):
 
     OmegaConf.update(adaptive_config.model, field, value)
     with pytest.raises(ValueError):
-        build_egnn_orig(adaptive_config.model, "mu")
+        build_egnn(adaptive_config.model, "mu")

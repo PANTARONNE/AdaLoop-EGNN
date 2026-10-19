@@ -1,7 +1,11 @@
 # @package _global_
+defaults:
+  - qm9_loop_egnn
+  - _self_
+
 model:
-  weight_tying: true
   execution:
     depth: 12
 task:
   supervision: all_steps
+  normalization: mad

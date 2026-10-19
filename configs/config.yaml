@@ -2,11 +2,11 @@ defaults:
   - dataset: qm9
   - model: egnn
   - task: scalar_regression
-  - optimizer: adamw
-  - trainer: default
+  - optimizer: adam
+  - trainer: egnn
   - logging: csv
   - _self_
-  - experiment: null
+  - experiment: qm9_egnn
   - override hydra/job_logging: disabled
   - override hydra/hydra_logging: disabled
 

@@ -1,5 +1,0 @@
-# @package _global_
-model:
-  weight_tying: true
-  execution:
-    depth: 4

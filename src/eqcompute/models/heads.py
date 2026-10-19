@@ -1,16 +1,6 @@
 from torch import nn
 
 from eqcompute.contracts import PropertyContext
-from eqcompute.models.geometry import aggregate
-
-
-class ScalarReadout(nn.Module):
-    def __init__(self, pooling="sum"):
-        super().__init__()
-        self.pooling = pooling
-
-    def forward(self, state, graph):
-        return aggregate(state.node_features, graph.batch_index, graph.num_graphs, self.pooling)
 
 
 class PredictionHead(nn.Module):

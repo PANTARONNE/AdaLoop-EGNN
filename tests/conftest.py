@@ -48,7 +48,7 @@ def adaptive_config():
     directory = str(Path(__file__).resolve().parents[1] / "configs")
     with initialize_config_dir(config_dir=directory, version_base="1.3"):
         config = compose(config_name="config", overrides=[
-            "experiment=qm9_adaloop_egnn_orig_smoke",
+            "experiment=qm9_adaloop_egnn_smoke",
         ])
     config.model.hidden_dim = 8
     config.model.halting.hidden_dim = 8

@@ -24,7 +24,7 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
     torch.set_num_threads(1)
     with initialize_config_dir(config_dir=str(ROOT / "configs"), version_base="1.3"):
         config = compose(config_name="config", overrides=[
-            "experiment=qm9_adaloop_egnn_orig_smoke",
+            "experiment=qm9_adaloop_egnn_smoke",
         ])
     config.dataset.root = str(data_root)
     config.output_root = str(Path(output_root).resolve())
