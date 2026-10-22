@@ -93,7 +93,7 @@ $\sum_{k=1}^{K}p_{b,k}=1$。末步直接设 $q_{b,K}=1$ 并接收全部剩余质
 
 **Loss 设计**
 
-训练目标是停止分布下的期望预测误差。标签先转换为
+训练目标是停止分布下的期望预测误差加停止分布熵正则。标签先转换为
 $\tilde y_b=(y_b-m)/s$，其中 $m$、$s$ 仅在训练集拟合。默认 `mad` 使用训练均值 $m$
 和平均绝对偏差 $s=\operatorname{mean}_{\mathrm{train}}|y-m|$
 （这里不是中位数绝对偏差）；`standard` 使用总体标准差，二者的 scale 均下限截断为
@@ -110,8 +110,16 @@ $$
 
 $$
 \mathcal{L}
-=\mathcal{L}_{\mathrm{prediction}}.
+=\mathcal{L}_{\mathrm{prediction}}-\beta H,\qquad
+H=-\frac{1}{B}\sum_{b=1}^{B}\sum_{k=1}^{K}p_{b,k}\log p_{b,k}.
 $$
+
+默认固定系数 `task.entropy_beta=0.01`，可通过 `task.entropy_beta=0` 关闭。
+系数必须为有限、非负数，不能是布尔值。熵针对每个样本的完整停止分布 $p$ 计算，
+再按 batch 平均；不是条件停止概率 $q$ 的熵，也不是 batch 平均分布的熵。
+使用自然对数，不除以 $\log K$；计算采用 `p * log(p.clamp_min(1e-12))`，
+零概率项贡献为零。熵项保持梯度，日志统计才 detach。
+`0.01` 是待验证的实验起始值，不保证消除停止分布坍缩。
 
 `task.loss=mse` 时仅将 $\ell_{b,k}$ 换为平方误差，停止分布保持相同定义。
 单性质预测张量形状为 `[B,K,1]`，标签为 `[B,1]`，停止质量为 `[B,K]`；
@@ -119,7 +127,9 @@ $$
 
 ```text
 prediction_loss = mean_b sum_k p[b,k] * abs(y_k[b]-normalized_target[b])
-loss = prediction_loss
+halting_entropy = -mean_b sum_k p[b,k] * log(max(p[b,k], 1e-12))
+entropy_loss = -entropy_beta * halting_entropy
+loss = prediction_loss + entropy_loss
 ```
 
 这里优化的是停止分布下的**期望误差**，不是先混合预测再计算误差
@@ -127,21 +137,23 @@ $|\sum_k p_{b,k}\hat y_{b,k}-\tilde y_b|$。例如目标为 2、两步预测为 
 停止质量各为 0.5 时，期望 MAE 为 2，而混合预测的 MAE 为 0；
 后者可能通过不同深度误差抵消，无法反映实际选择某一步输出时的误差。
 
-各深度误差相同时，调整停止质量不会改变损失；停止深度由各步误差和模型训练结果决定。
-比较不同实验时需统一 normalization。
+各深度误差相同时，调整停止质量不会改变 prediction_loss，但正系数的熵正则偏好
+更高熵的停止分布。总损失可能为负，不代表预测误差为负；比较预测质量应看 MAE
+和 prediction_loss。比较不同实验时需统一 normalization 和熵正则系数。
 
 自适应阶段完整展开到 $K$，不采样离散停止深度，也不通过 CDF 阈值选择反向传播。
 $\hat y_{b,k}$ 与 $p_{b,k}$ 都保留计算图：预测项训练 backbone/readout/head，
 并通过停止质量训练 controller。Controller 根据各深度的预测误差分配停止质量，
-无需 Oracle 停止标签或 REINFORCE。当前目标没有额外的熵正则或
-Oracle 监督；`halting_entropy` 仅作为日志指标。
+无需 Oracle 停止标签或 REINFORCE。熵正则通过停止分布训练 controller，
+并沿现有可微路径传回 backbone；当前目标不包含计算成本或 Oracle 监督。
 
 Warm-up 阶段每个 batch 均匀抽取一个深度 $k^\star\sim\mathrm{Uniform}\{1,\ldots,K\}$，
 整个 batch 执行到该深度，使用
 $\mathcal{L}_{\mathrm{warmup}}=\frac{1}{B}\sum_b\ell_{b,k^\star}$。
-此时不调用 controller，仅训练共享 backbone/readout/head，
+此时不调用 controller，不加入熵正则，仅训练共享 backbone/readout/head，
 使其在不同深度都能输出预测；进入自适应阶段后再联合学习停止策略。
-Validation 始终使用 `full` 模式计算上述自适应 loss，包括 warm-up 期间的 validation。
+Validation 始终使用 `full` 模式计算包含熵正则的上述自适应 loss，
+包括 warm-up 期间的 validation；此时仅 train 的熵项不适用。
 
 实现见 [adaptive_loss 与训练阶段](../src/eqcompute/tasks/adaptiveRegression.py)、
 [标签变换](../src/eqcompute/tasks/targetTransform.py)；
@@ -149,7 +161,7 @@ Validation 始终使用 `full` 模式计算上述自适应 loss，包括 warm-up
 
 **训练与停止语义**
 
-默认 1000 epochs 中前 200 epochs 为 warm-up，每 batch 均匀抽一个深度，只监督该深度。
+默认 1000 epochs 中前 300 epochs 为 warm-up，每 batch 均匀抽一个深度，只监督该深度。
 后续完整展开到 Kmax，联合训练 controller。训练过程不声称节省消息传播计算。
 `task.warmup_epochs` 是显式值；缩短训练需同时调整，恢复时不重新按比例计算。
 
@@ -175,6 +187,7 @@ trace 的 depth 选择只控制 detached 表示快照。hard 不伪造未执行�
 ```bash
 python scripts/train.py experiment=qm9_loop_egnn_diagnostic task.target=mu
 python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu
+python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu task.entropy_beta=0
 python scripts/train.py experiment=qm9_adaloop_egnn task.normalization=standard
 ```
 
@@ -207,11 +220,17 @@ python scripts/train.py experiment=qm9_adaloop_egnn \
   resume=outputs/<run>/checkpoints/last.pt
 ```
 
-保持数据、模型、task（含 warm-up）、优化器及 cosine 周期配置一致。
+保持数据、模型、task（含 warm-up 和 entropy_beta）、优化器及 cosine 周期配置一致。
+熵系数同时保存在配置和 task 状态中，恢复时拒绝系数不一致。旧 adaptive checkpoint
+缺少 entropy_beta 时解释为 0；从这类 checkpoint 恢复需显式设置 `task.entropy_beta=0`。
+关闭正则时直接使用原预测损失，保持原有损失和梯度行为。
 本轮不实现从旧 Loop 权重迁移初始化 AdaLoop；resume 不是跨模型迁移。
 
-metrics.csv 保存 prediction_loss、expected_depth、halt_depth、executed_depth、
+metrics.csv 保存总 loss、prediction_loss、entropy_loss、expected_depth、halt_depth、executed_depth、
 首步/末步停止比例、分布熵和 warm-up 标记。按样本数加权；不适用统计留空，表头不变。
+entropy_loss 是带权重和符号的 $-\beta H$，满足 `loss = prediction_loss + entropy_loss`。
+warm-up 训练的 entropy_loss 为 0、halting_entropy 为空；自适应训练和 validation
+记录实际熵与熵项。best.pt 仍按 validation MAE 选取，不按包含正则的总损失选取。
 expected_depth 是 soft 期望；halt_depth 是选择结果；executed_depth 是实际执行长度。
 validation 使用完整轨迹，因此其 executed_depth=Kmax。
 

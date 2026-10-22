@@ -16,6 +16,6 @@ task:
   name: adaptive_regression
   supervision: adaptive
   normalization: mad
-  # Explicit boundary remains unchanged on resume. Override with shorter training.
   warmup_epochs: 300
+  entropy_beta: 0.01
 experiment_name: qm9_${task.target}_adaloop_k${model.execution.depth}_s${seed}

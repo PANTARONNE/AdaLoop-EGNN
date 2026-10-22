@@ -1,0 +1,32 @@
+{
+ "build": "52_gnu",
+ "build_number": 52,
+ "channel": "https://mirrors.zju.edu.cn/anaconda/pkgs/main/linux-64",
+ "constrains": [],
+ "depends": [],
+ "extracted_package_dir": "",
+ "files": [],
+ "fn": "_openmp_mutex-5.1-52_gnu.conda",
+ "legacy_bz2_md5": "9fc9aff1a9d85b7d0dd3bad20081f29c",
+ "legacy_bz2_size": 5559,
+ "license": "BSD-3-Clause",
+ "license_family": "BSD",
+ "link": {
+  "source": "",
+  "type": 1
+ },
+ "md5": "8c74a3d91bfc4b484c91ed7201f84fba",
+ "name": "_openmp_mutex",
+ "package_tarball_full_path": "",
+ "paths_data": {
+  "paths": [],
+  "paths_version": 1
+ },
+ "requested_spec": "None",
+ "sha256": "2f2c16a33f51ba032e8d4929b4d2e9173d81931d8d280a4a4a85a2412e8bdaf0",
+ "size": 6672,
+ "subdir": "linux-64",
+ "timestamp": 1779131107752,
+ "url": "https://mirrors.zju.edu.cn/anaconda/pkgs/main/linux-64/_openmp_mutex-5.1-52_gnu.conda",
+ "version": "5.1"
+}

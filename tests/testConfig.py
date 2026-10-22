@@ -55,6 +55,8 @@ def test_egnn_backbone_presets_use_local_pyg_qm9(preset):
     assert not {"num_rbf", "coordinate_scale", "graph", "head"} & set(config.model)
     construct(MODELS, config.model.name, config.model, config.task.target)
     assert config.task.normalization == "mad"
+    if config.task.name == "adaptive_regression":
+        assert config.task.entropy_beta == 0.01
     assert "subtract_thermo" not in config.dataset
     if preset.endswith("smoke"):
         assert (config.dataset.train_size, config.dataset.val_size, config.dataset.test_size) == (

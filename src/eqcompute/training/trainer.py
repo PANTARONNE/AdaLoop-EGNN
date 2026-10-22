@@ -47,7 +47,14 @@ class Trainer:
             raise ValueError("Resume from last.pt; best.pt is for evaluation")
         checkpoint = load_checkpoint(path)
         for key in ("model", "task", "dataset", "optimizer", "loader", "seed"):
-            if checkpoint["config"][key] != self.config[key]:
+            saved, current = checkpoint["config"][key], self.config[key]
+            if key == "task":
+                # Missing entropy coefficients in legacy adaptive runs mean no regularization.
+                if saved.get("name") == "adaptive_regression":
+                    saved = {"entropy_beta": 0.0, **saved}
+                if current.get("name") == "adaptive_regression":
+                    current = {"entropy_beta": 0.0, **current}
+            if saved != current:
                 raise ValueError(f"Resume configuration mismatch: {key}")
         if (
             checkpoint["config"]["trainer"]["gradient_clip"]

@@ -1,3 +1,6 @@
+import math
+from numbers import Real
+
 import torch
 
 from eqcompute.contracts import TaskResult
@@ -11,6 +14,11 @@ def adaptive_loss(predictions, target, probabilities, loss="mae"):
     return (probabilities * errors.mean(-1)).sum(1).mean()
 
 
+def halting_entropy(probabilities):
+    """Mean per-graph entropy of stop masses [B,K], in nats (not divided by log K)."""
+    return -(probabilities * probabilities.clamp_min(1e-12).log()).sum(1).mean()
+
+
 class AdaptiveRegressionTask(RegressionTask):
     supervision_modes = ("adaptive",)
 
@@ -18,6 +26,13 @@ class AdaptiveRegressionTask(RegressionTask):
         super().__init__(config, target_index, unit, transform)
         if type(config.warmup_epochs) is not int or config.warmup_epochs < 0:
             raise ValueError("warmup_epochs must be a nonnegative integer")
+        beta = config.get("entropy_beta", 0.0)
+        if (
+            isinstance(beta, bool) or not isinstance(beta, Real)
+            or not math.isfinite(beta) or beta < 0
+        ):
+            raise ValueError("entropy_beta must be a finite nonnegative number")
+        self.entropy_beta = float(beta)
         self.epoch = 0
 
     def on_epoch_start(self, model, epoch):
@@ -45,8 +60,15 @@ class AdaptiveRegressionTask(RegressionTask):
                 values, normalized, info.stop_probabilities, self.config.loss,
             )
         p = info.stop_probabilities
+        entropy = None if p is None else halting_entropy(p)
+        entropy_loss = prediction_loss.new_zeros(())
+        loss = prediction_loss
+        if entropy is not None and self.entropy_beta > 0:
+            entropy_loss = -self.entropy_beta * entropy
+            loss = prediction_loss + entropy_loss
         statistics = {
             "prediction_loss": prediction_loss.detach().item(),
+            "entropy_loss": entropy_loss.detach().item(),
             "expected_depth": (
                 None if info.expected_depth is None else info.expected_depth.detach().mean().item()
             ),
@@ -57,13 +79,12 @@ class AdaptiveRegressionTask(RegressionTask):
                 (info.halt_depth == model.execution.depth).float().mean().item()
             ),
             "halting_entropy": (
-                None if p is None else -(p.detach() * p.detach().clamp_min(1e-12).log())
-                .sum(1).mean().item()
+                None if entropy is None else entropy.detach().item()
             ),
             "warmup_fraction": float(warmup),
         }
         return TaskResult(
-            prediction_loss, self.transform.decode(output.prediction.detach()), target.detach(),
+            loss, self.transform.decode(output.prediction.detach()), target.detach(),
             batch.graph.num_graphs, statistics,
         )
 
@@ -71,10 +92,13 @@ class AdaptiveRegressionTask(RegressionTask):
         return {
             **super().state_dict(), "epoch": self.epoch,
             "warmup_epochs": self.config.warmup_epochs,
+            "entropy_beta": self.entropy_beta,
         }
 
     def load_state_dict(self, state):
         if state["warmup_epochs"] != self.config.warmup_epochs:
             raise ValueError("Checkpoint warm-up schedule mismatch")
+        if state.get("entropy_beta", 0.0) != self.entropy_beta:
+            raise ValueError("Checkpoint entropy_beta mismatch")
         super().load_state_dict(state)
         self.epoch = state["epoch"]

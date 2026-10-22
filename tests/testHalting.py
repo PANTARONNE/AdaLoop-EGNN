@@ -1,10 +1,11 @@
+import math
 from dataclasses import replace
 
 import pytest
 import torch
 
 from eqcompute.models.halting import HaltingController, cdf_depth, stopping_distribution
-from eqcompute.tasks.adaptiveRegression import adaptive_loss
+from eqcompute.tasks.adaptiveRegression import adaptive_loss, halting_entropy
 
 
 def test_stopping_probabilities_boundaries_and_gradients():
@@ -60,3 +61,17 @@ def test_extreme_hazards(q):
     p = stopping_distribution(q)
     assert torch.isfinite(p).all()
     torch.testing.assert_close(p.sum(1), torch.ones(3))
+
+
+@pytest.mark.parametrize("masses,expected", [
+    ([[0.25, 0.25, 0.25, 0.25]], math.log(4)),
+    ([[1.0, 0.0], [0.0, 1.0]], 0.0),
+    ([[1.0], [1.0]], 0.0),
+    ([[0.5, 0.5], [1.0, 0.0]], math.log(2) / 2),
+])
+def test_halting_entropy_values_and_finite_gradients(masses, expected):
+    p = torch.tensor(masses, dtype=torch.float64, requires_grad=True)
+    entropy = halting_entropy(p)
+    torch.testing.assert_close(entropy, torch.tensor(expected, dtype=torch.float64))
+    entropy.backward()
+    assert torch.isfinite(p.grad).all()
