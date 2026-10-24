@@ -1,27 +1,22 @@
-# Adaptive Equivariant Computation — Experiment 0
+# AdaLoop-EGNN
 
-当前实现 QM9、untied EGNN、weight-tied Loop-EGNN、fixed-depth sweep 与逐深度预测，
-以及基于 EGNN 的单性质 AdaLoop（M0–M3）：逐深度诊断、Oracle、两阶段训练、
-停止概率加权预测损失和实际提前退出。默认 MAD，可通过配置切换。用法见 [AdaLoop 说明](docs/AdaLoopEGNN.md)。
-不包含多性质条件化、QMugs、PaiNN 或晶体模型。
+在 QM9 单目标回归上比较固定深度 EGNN、共享参数 Loop-EGNN，以及学习停止循环次数的 AdaLoop-EGNN。
+当前 AdaLoop 使用两个独立训练阶段：先按 batch 随机深度训练预测器，再冻结预测器、只训练停止器。
 
-默认训练与 `experiment=qm9_egnn` 使用同一 EGNN 基线，与 Loop / AdaLoop 配置均直接使用
-本地 PyG QM9 缓存 `data/qm9/processed/data_v3.pt`，采用每 epoch 结束后一次 cosine
-调度。数据划分、标签单位和模型来源见 [EGNN 使用说明](docs/EGNN.md)。
-共享参数循环实验使用 `experiment=qm9_loop_egnn`；多卡扫描指定 `--weight-tying true`。
+所有配置使用本地 PyG QM9 数据协议。默认训练入口仍为固定深度 `qm9_egnn`；
+AdaLoop 需要显式选择 `qm9_adaloop_egnn_predictor` 和 `qm9_adaloop_egnn_halting`。
+详细模型与损失定义见 [EGNN 说明](docs/EGNN.md) 和 [AdaLoop 说明](docs/AdaLoopEGNN.md)，
+验证结果见 [VALIDATION.md](VALIDATION.md)。
 
-## WSL 环境
+## 环境与数据
 
-仓库在 Windows 的 `D:\prjs\AdaLoopEGNN`，对应 WSL 的 `/mnt/d/prjs/AdaLoopEGNN`。
-以下命令在 **WSL Bash** 中运行：
+从仓库根目录运行命令。已有环境直接激活：
 
 ```bash
-source ~/miniconda3/etc/profile.d/conda.sh
 conda activate AdaLoopEGNN
-cd /mnt/d/prjs/AdaLoopEGNN
 ```
 
-在另一台机器重建环境：
+重建环境：
 
 ```bash
 conda env create -f environment.yml
@@ -30,40 +25,200 @@ python -m pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/
 python -m pip install -e '.[dev]'
 ```
 
-本机使用 Python 3.11、CUDA 12.1 版 PyTorch 2.3.1 与 PyG 2.7.0。
-选择这一组合是为了复用已有完整安装缓存；实现不依赖新版本专属 API。
-NumPy 限制在 1.x，兼容该 PyTorch wheel。实际安装版本记录于 `requirements-wsl.lock.txt`。
-精确重建 Python 包时，可在新 Python 3.11 环境中运行
-`python -m pip install -r requirements-wsl.lock.txt`。
-CUDA 安装命令来源：[PyTorch 官方历史版本说明](https://pytorch.org/get-started/previous-versions/#v231)。
-不需要安装 torch-scatter、torch-cluster 或完整 CUDA toolkit。
+已验证环境为 Python 3.11、PyTorch 2.3.1+cu121、PyG 2.7.0、NumPy 1.26.4。
+[requirements-wsl.lock.txt](requirements-wsl.lock.txt) 保存已记录的环境依赖版本。
+训练设备默认为 `auto`，可通过 `trainer.device=cpu` 或 `trainer.device=cuda:0` 指定。
 
-## 最小运行
+默认数据目录为 `data/qm9`，现有 `processed/data_v3.pt` 可直接使用。
+常规训练在缺少数据时由 PyG 下载、准备 QM9；独立两阶段 smoke 脚本要求已有缓存。
+覆盖数据位置使用 `dataset.root=/data/qm9`，smoke 脚本使用 `--data-root /data/qm9`。
+数据路径会在保存配置中转为绝对路径，后续预测和分析需能访问该位置。
+
+数据与目标处理约定：
+
+- 默认划分为 110000 train / 10000 validation / 剩余 test，`dataset.split_seed=42`；训练 `seed` 独立设置。
+- 样本 ID 使用原始 QM9 idx，完整划分写入 `split_ids.json`。
+- 默认 `task.target=mu`，`task.normalization=mad`。MAD 使用训练集均值和平均绝对偏差；
+  也支持 `standard` 和 `none`。归一化仅拟合训练标签，MAE/RMSE 和预测 CSV 使用原属性单位。
+- 直接使用 PyG 标签，不额外扣除原子参考能，也不重复转换 Hartree。
+  `U0`（列 7）和 `U0_atom`（列 12）是不同目标。
+- 适配器保留 19 个目标；默认学习率表覆盖 `mu, alpha, homo, lumo, gap, r2, zpve, U0, U, H, G, Cv`。
+  选择其他目标时需显式设置 `optimizer.learning_rate`。
+
+## 训练配置
+
+配置位于 [configs/experiment](configs/experiment)。`K` 表示执行深度，AdaLoop 中表示最大循环次数。
+
+| `experiment` | 训练内容 | 默认 K | 默认轮数 |
+|---|---|---:|---:|
+| `qm9_egnn` | 各层独立参数，末层监督；默认入口 | 7 | 1000 |
+| `qm9_loop_egnn` | 共享 EGNN 参数，末层监督 | 7 | 1000 |
+| `qm9_loop_egnn_diagnostic` | 共享参数，所有深度等权监督 | 12 | 1000 |
+| `qm9_adaloop_egnn_predictor` | 冻结停止器，随机深度训练预测器 | 24 | 1000 |
+| `qm9_adaloop_egnn_halting` | 冻结预测器，仅训练停止器 | 24 | 500 |
+| `qm9_smoke` | 固定深度基线短程训练 | 3 | 3 |
+| `qm9_adaloop_egnn_smoke` | 仅预测器阶段短程训练 | 4 | 3 |
+
+完整配置默认 hidden_dim=128、batch size=96、Adam、MAE loss 和每 epoch 一次 cosine 调度。
+`qm9_smoke` 使用 hidden_dim=32、batch size=32；AdaLoop smoke 使用 hidden_dim=32、batch size=16。
+两种 smoke 均取 192 个样本，划分为 128/32/32。短程误差用于检查流程。
+
+### AdaLoop 两阶段训练
+
+先训练预测器：
 
 ```bash
-pytest -q
-python scripts/train.py experiment=qm9_smoke trainer.device=cuda
+python scripts/train.py experiment=qm9_adaloop_egnn_predictor task.target=mu
 ```
 
-首次 QM9 运行会下载 PyG 官方数据。没有 RDKit 时使用其预处理版本。
-普通测试不下载数据；真实数据测试需显式指定已有数据目录：
+从日志中的 `output=...` 获取第一阶段运行目录，替换以下 `PREDICTOR_RUN` 后训练停止器：
 
 ```bash
-QM9_ROOT=data/qm9 pytest -q -m integration
+python scripts/train.py experiment=qm9_adaloop_egnn_halting task.target=mu \
+  init_from=outputs/PREDICTOR_RUN/checkpoints/best.pt
 ```
 
-Smoke 配置随机选出 192 个真实样本，128 train / 32 validation / 32 test，
-hidden_dim=32、K=3、3 epochs。其误差只用于检查流程，不是基准结果。
+两个阶段分别生成运行目录，不会根据 epoch 自动切换。最大深度、模型、目标属性、归一化设置和数据划分需匹配；
+若第一阶段覆盖了这些参数，第二阶段需使用相同设置。
 
-完整单次训练和不同配置：
+第一阶段训练 initializer、共享 EGNN、readout 和预测 head，停止器被冻结且不参与前向计算。
+每个 batch 均匀采样一个深度 `d ∈ [1, K]`，整个 batch 使用该深度的归一化预测误差训练。
+验证计算全部深度，不调用停止器：
+
+| 第一阶段验证字段 | 含义 |
+|---|---|
+| `validation_mae` | 每个分子选取绝对误差最小的深度，再对分子平均；用于选择 `best.pt` |
+| `validation_mean_depth_mae` | 所有分子、所有深度的平均绝对误差 |
+| `validation_final_depth_mae` | 全部使用第 K 层预测的 MAE |
+| `validation_oracle_depth` | 每个分子最优深度的平均值，并列时选择较浅层 |
+| `validation_loss` | 所有深度归一化误差的平均值，无熵项 |
+
+第一阶段的 `validation_mae` 是 **oracle MAE**，使用真实标签选层，是理想选层的误差下限。
+
+第二阶段固定整个预测器及其状态，只更新停止器。训练完整展开到 K，保留原停止概率加权误差与熵正则：
+
+```text
+loss = mean_i sum_k p[i,k] * abs(z_pred[i,k] - z_target[i])
+       - entropy_beta * mean_i H(p[i])
+```
+
+`z` 为归一化目标或预测，`p` 为各深度的停止概率质量，`task.entropy_beta` 默认 `0.01`，可设为 `0`。
+验证每个分子取停止概率 CDF 首次达到 `model.execution.threshold=0.5` 的深度，
+将该层预测还原到原单位后统计 `validation_mae`，并据此选模。
+该指标不含熵项。两阶段 `validation_mae` 的选层方式不同，比较结果时需注明阶段。
+
+`init_from` 可指定第一阶段的 `best.pt` 或 `last.pt`，只复制预测器权重和归一化参数；
+停止器重新初始化，优化器、cosine 周期、epoch 和历史最佳指标均重新开始。
+来源路径和 SHA256 记录在 metadata 中。停止器阶段必须提供 `init_from` 或同阶段 `resume`。
+
+### 基线与逐深度诊断
 
 ```bash
-python scripts/train.py experiment=qm9_egnn
-python scripts/train.py experiment=qm9_loop_egnn task.target=gap
-python scripts/train.py experiment=qm9_loop_egnn_diagnostic
+python scripts/train.py experiment=qm9_egnn task.target=mu
+python scripts/train.py experiment=qm9_loop_egnn task.target=gap model.execution.depth=8
+python scripts/train.py experiment=qm9_loop_egnn_diagnostic task.target=mu
 ```
 
-固定深度 sweep（会产生多个独立训练，不在 smoke 验证中自动启动）：
+`task.supervision=final` 只监督最终深度；`all_steps` 等权监督所有深度，共用预测 head。
+基线两种监督方式都按最终深度的 validation MAE 选模。
+`final` 模型的中间层未获直接监督，逐层结果应注明训练协议。
+
+### 短程验收
+
+基线短程训练：
+
+```bash
+python scripts/train.py experiment=qm9_smoke
+```
+
+AdaLoop 完整两阶段链路使用独立脚本：
+
+```bash
+python scripts/smokeAdaLoop.py --data-root data/qm9 --device auto
+```
+
+脚本调用正式 `train()`，分别训练预测器 1 轮、停止器 2 轮，
+检查预测器状态完全不变、完整展开与实际提前停止的预测和停止深度一致，
+并导出测试集预测及 `smoke_summary.json`。可用 `--normalization standard` 或 `none` 切换归一化，
+用 `--output-root` 指定输出位置。直接运行 `experiment=qm9_adaloop_egnn_smoke` 只覆盖预测器阶段。
+
+## 输出与恢复训练
+
+每次训练在 `output_root`（默认 `outputs`）下创建唯一目录：
+
+```text
+outputs/EXPERIMENT_NAME__UTC_TIMESTAMP_RUN_ID/
+  config.yaml
+  metadata.json
+  split_ids.json
+  checkpoints/best.pt
+  checkpoints/last.pt
+  metrics.csv
+  predictions/
+  logs/train.log
+```
+
+AdaLoop 目录名包含目标、阶段、最大深度和 seed；固定深度目录名包含目标、参数共享设置、深度、监督方式和 seed。
+两个阶段均从第一轮起保存最佳模型。`metrics.csv` 按样本数累计指标，避免小尾批次获得过高权重。
+
+同阶段恢复使用 `last.pt`，并重复原运行的配置覆盖参数：
+
+```bash
+python scripts/train.py experiment=qm9_adaloop_egnn_predictor task.target=mu \
+  resume=outputs/PREDICTOR_RUN/checkpoints/last.pt
+python scripts/train.py experiment=qm9_adaloop_egnn_halting task.target=mu \
+  resume=outputs/HALTING_RUN/checkpoints/last.pt
+```
+
+`resume` 与 `init_from` 互斥；恢复停止器时不需要再访问第一阶段文件。
+恢复会创建新目录，载入模型、优化器、scheduler、目标变换和 Python/NumPy/Torch/CUDA、DataLoader RNG，
+保留已有最佳 checkpoint；新 `metrics.csv` 只记录新增轮次。支持 epoch 边界恢复。
+
+模型、task、数据、优化器、loader、seed、梯度裁剪和 scheduler 配置需与原运行一致。
+默认 `trainer.scheduler.t_max=${trainer.epochs}`，因此直接增加 `trainer.epochs` 会同时改变 cosine 周期并被拒绝。
+若要续跑至更大的轮数，必须保持原 `t_max`，且总轮数不能超过该周期；
+正式训练中断后恢复通常只需使用原来的轮数设置。
+旧自动 warm-up / 联合训练配置及其 adaptive checkpoint 已不再支持。
+
+## 预测导出
+
+将 `FIXED_RUN` 和 `HALTING_RUN` 替换为对应训练目录。
+
+固定深度模型一次展开导出所有深度：
+
+```bash
+python scripts/predict.py --checkpoint outputs/FIXED_RUN/checkpoints/best.pt --split test
+```
+
+输出 `predictions/test_best_by_depth.csv`，每行对应样本、性质与读出深度。
+包含真实值、预测值、单位、checkpoint SHA256、split ID、seed 和训练协议。
+可用已有逐层 CSV 绘制误差曲线：
+
+```bash
+python -m eqcompute.analysis.depthCurves \
+  outputs/FIXED_RUN/predictions/test_best_by_depth.csv \
+  --output outputs/FIXED_RUN/predictions/depth_curve.png
+```
+
+AdaLoop 的停止推理使用**停止器阶段 checkpoint**：
+
+```bash
+python scripts/predict.py --checkpoint outputs/HALTING_RUN/checkpoints/best.pt --split test
+python scripts/predict.py --checkpoint outputs/HALTING_RUN/checkpoints/best.pt \
+  --split validation --mode diagnostic
+```
+
+默认 `hard` 模式实际提前退出，已停止分子的节点和边从后续计算中移除，
+输出 `test_best_adaptive.csv`。`diagnostic` 完整展开所有深度，
+输出 `validation_best_diagnostic_by_depth.csv`，含逐层预测、停止概率及深度统计。
+预测器阶段的停止器尚未训练，其停止结果不作为推理性能报告。
+
+预测支持 `--device auto|cpu|cuda:0`、`--batch-size` 和 `--overwrite`；已有输出默认拒绝覆盖。
+测试集用于最终报告，模型和超参数选择依据验证集。
+
+## 深度扫描与汇总
+
+固定深度配置可通过 Hydra 串行扫描多个组合：
 
 ```bash
 python scripts/train.py -m experiment=qm9_egnn \
@@ -71,399 +226,126 @@ python scripts/train.py -m experiment=qm9_egnn \
   'model.weight_tying=false,true' 'seed=0,1,2'
 ```
 
-`experiment=qm9_egnn` 对应 `configs/experiment/qm9_egnn.yaml`。
-默认深度为 7，hidden_dim=128，采用 MAD、Adam、性质学习率和每 epoch cosine 调度；
-单次训练可用 `model.execution.depth=8` 覆盖，
-多卡扫描由 `sweepDepth.py --depths ...` 为每个任务设置深度。
-
-Hydra preset 只覆盖差异项，没有重复的 train_depthN.py。
-Hydra 的 sweep 记录单独保存在 `outputs/_sweeps/`；每个训练任务仍有独立运行目录。
-从仓库根目录启动；相对数据路径按当前目录解释，并在保存配置中解析为绝对路径。
-
-## 多 GPU 深度扫描（单机 Linux）
-
-新增入口 `scripts/sweepDepth.py` 扫描 `depth × seed`。每个组合是独立单卡训练，
-每张指定 GPU 同时只运行一个任务，任务结束后立即领取下一个组合。
-`--weight-tying true/false` 必填，整批固定；该参数优先于 experiment preset 中的设置。
-
-例如在 8 张 GPU 上执行 8 个深度 × 3 个 seed，共 24 次 untied EGNN 训练：
+单机多 GPU 调度使用 `sweepDepth.py`。每个深度 × seed 独立训练，每张 GPU 同时运行一个任务：
 
 ```bash
-python scripts/sweepDepth.py \
-  --gpus 0,1,2,3,4,5,6,7 \
-  --depths 1,2,3,4,6,8,10,12 \
-  --seeds 0,1,2 \
-  --weight-tying false -- \
-  experiment=qm9_egnn task.target=mu
+python scripts/sweepDepth.py --gpus 0,1 --depths 2,4,8,12 --seeds 0,1,2 \
+  --weight-tying true -- experiment=qm9_loop_egnn task.target=mu
 ```
 
-Loop-EGNN 使用 `--weight-tying true`。其他训练设置继续通过 `--` 后的 Hydra overrides
-传入，例如 `dataset.root=/data/qm9`、`trainer.epochs=200`、`loader.batch_size=128`。
-一次只扫描深度和 seed；不要再传 `-m`、逗号扫描、`seed=...`、`model.execution.depth=...`、
-`model.weight_tying=...`、`trainer.device=...`、`resume=...` 或 Hydra 运行控制参数。
+`--weight-tying true/false` 必填。其他设置通过 `--` 后的 Hydra 参数传入；
+深度、seed、参数共享设置、设备、resume 和 Hydra 扫描参数由调度器管理。
+追加 `--dry-run`（放在 `--` 之前）可只检查配置与任务列表，不启动训练或准备数据。
+GPU 编号按当前 CUDA 可见设备顺序解释，子进程使用分配到的单张 GPU。
+调度前串行准备一次数据，再启动训练；CPU 数据加载开销随并发数增加。
 
-先检查任务列表而不准备数据、不创建输出、不启动训练：
-
-```bash
-python scripts/sweepDepth.py --gpus 0,1 --depths 2,4 --seeds 0,1 \
-  --weight-tying true --dry-run -- experiment=qm9_smoke
-```
-
-去掉 `--dry-run` 即为 4 个短训练的服务器验收命令。dry-run 只验证参数与配置，
-不验证 GPU 是否存在、可用或显存充足。
-
-GPU 编号按当前 CUDA 可见设备顺序解释。没有设置 `CUDA_VISIBLE_DEVICES` 时，
-`--gpus 0,1` 选择 CUDA 设备 0、1；若已有 `CUDA_VISIBLE_DEVICES=3,7`，
-`--gpus 0,1` 选择该列表中的两张卡。子进程只看见分配给它的单张卡，使用逻辑设备 `cuda:0`。
-指定列表视为已分配给本批次的 GPU，不检测其他程序是否占用这些卡。
-
-调度前通过现有 dataset factory 串行准备一次数据，完成后才并行启动训练，避免本批次
-首次下载/预处理冲突。服务器不能联网时需提前准备好完整 QM9 缓存并指定 `dataset.root`。
-各任务保持相同 dataset 配置和 `split_seed`，只改变训练 seed 和深度；模型、Task、Trainer
-及 checkpoint 格式均复用单次训练实现。每个进程各自加载数据，CPU 内存与
-`loader.num_workers` 的总开销会随并发任务数增加。
-
-相对数据和输出路径统一按仓库根目录解释；子进程使用启动脚本的同一个 Python 环境。
-输出保存在 `output_root` 下的独立批次目录：
+输出结构为：
 
 ```text
-outputs/_depth_sweeps/<UTC_timestamp>_<id>/
+outputs/_depth_sweeps/BATCH_ID/
   jobs.json
-  logs/k2_s0.log
-  runs/k2_s0/<原有唯一运行目录>/
-    config.yaml
-    metadata.json
-    split_ids.json
-    checkpoints/{best.pt,last.pt}
-    metrics.csv
-    predictions/
-    logs/train.log
+  logs/kDEPTH_sSEED.log
+  runs/kDEPTH_sSEED/TRAINING_RUN/
 ```
 
-`jobs.json` 持续记录各任务参数、GPU、PID、状态、退出码、完整启动参数、日志和运行目录。
-任务日志还包含训练目录建立之前的启动错误。任一任务失败后继续派发其他任务，
-全部完成后有失败则退出码为 1，全成功为 0。Ctrl+C 或 SIGTERM 会停止本批次的训练进程
-及其 DataLoader 子进程，未启动任务标为 cancelled，调度器退出码为 130。
+`jobs.json` 记录参数、状态、退出码、日志和运行目录。失败后继续其他任务，失败任务可缩小深度/seed 列表重跑；
+中断会终止本批次子进程。调度器不自动续训，单任务恢复使用 `train.py resume=...`。
 
-失败任务手动重跑，例如只重跑 depth=4、seed=1，并保持其余训练参数一致：
+汇总脚本只支持固定深度模型，通过 `sweepDepth.py` 生成的 `jobs.json` 查找各运行：
 
 ```bash
-python scripts/sweepDepth.py --gpus 0 --depths 4 --seeds 1 \
-  --weight-tying false -- experiment=qm9_egnn task.target=mu
+python scripts/evalDepth.py --sweep-dir outputs/_depth_sweeps/BATCH_ID --device auto
 ```
 
-重跑创建新的批次与运行目录。需要从某个 `last.pt` 继续时，使用下文的单次训练恢复入口；
-本脚本不自动重试或恢复整批任务。原有 `scripts/train.py` 单次训练和 Hydra 串行 sweep 用法保留。
+按深度输出各 seed 的 validation/test MAE 均值和样本标准差，test 使用最终训练深度的预测。
+有效测试预测缓存会复用；缺失时重新评估。失败或不完整任务会说明并跳过，有跳过任务时返回非零退出码。
+该汇总入口不处理 AdaLoop 的 oracle/CDF 指标。
 
-## 实验协议
+## 分子深度分析与绘图
 
-`task.supervision=final`：仅最终深度预测参与 loss。用于分别训练不同 K 的基线。
-中间预测可以导出，但没有得到直接监督，不能把它们当作充分训练的停止候选。
+对停止器阶段运行目录生成逐层 diagnostic 预测和分析；默认使用 validation，可用 `--split test` 切换：
 
-`task.supervision=all_steps`：所有执行深度的标量 loss 等权平均，所有深度共用同一 head。
-用于单个 checkpoint 的预测随深度变化实验。这是另一种训练协议，不能与 final 混报。
-两者均无 halting 或随机深度 warm-up。
+```bash
+python scripts/depthComplexity.py --run-dir outputs/HALTING_RUN
+python scripts/depthWorsening.py --run-dir outputs/HALTING_RUN
+```
 
-默认目标为 mu。数据适配器保留 PyG QM9 的 19 个目标；基线性质学习率表覆盖
-mu、alpha、homo、lumo、gap、r2、zpve、U0、U、H、G、Cv。选择其他目标时需显式设置
-`optimizer.learning_rate`。推荐先比较 mu、alpha、gap、U0。
-单目标 checkpoint 拒绝其他 property context；预留参数不意味着已经实现多目标模型。
+两者需要 `checkpoints/best.pt` 和保存的数据划分，支持 `--device`、`--batch-size`、`--overwrite`。
+默认复用有效缓存，补齐缺失产物；来源不符或内容不完整时报错。
 
-默认数据划分为 110000 / 10000 / remaining，split_seed=42；训练 seed 与划分 seed 分开。
-按原始 QM9 idx 生成 sample_id。数据集目标单位沿用 PyG，不能再次做 Hartree 到 eV 转换。
-U0（列 7）与 U0_atom（列 12）不是同一目标。
-标准化只拟合训练集，预测导出和 MAE/RMSE 都恢复为原始物理单位。不使用原子参考能修正。
-划分是本项目声明的固定随机划分，不声称与某篇论文逐样本一致。
+| 输出目录 | 内容 |
+|---|---|
+| `analysis/depth_complexity/validation/` | `complexity.csv`、`oracle.csv`、`depth_complexity.csv`、`summary.json` |
+| `analysis/depth_worsening/validation/` | `depth_worsening.csv`、`summary.json` |
 
-## 模型与数据流
+复杂度包括总原子数、重原子数、等权回转半径、元素种类数和元素熵。
+`oracle_depth` 按逐分子最小预测误差选择，平局取较浅层；`halt_depth` 按 CDF 阈值选择。
+Oracle 使用真实标签，仅作为理想选层参照。相邻深度分析统计所有分子从 k 到 k+1 的绝对误差严格增加比例，
+持平不计入变差，分母包括所有分子。
 
-Python 文件名使用 lower camel case，专有简称保留大写，例如 `depthCurves.py`、
-`GPUQueue.py`、`EGNN.py`、`QM9.py`、`testCUDA.py`。`__init__.py` 与 `conftest.py`
-保留工具约定名称；pytest 通过 `test*.py` 发现测试文件。
+绘图只读取分析 CSV，不重新运行模型：
+
+```bash
+python plot/depthComplexity.py \
+  --input outputs/HALTING_RUN/analysis/depth_complexity/validation/depth_complexity.csv \
+  --complexity all --output-dir outputs/HALTING_RUN/analysis/depth_complexity/validation/figures
+python plot/depthDistribution.py \
+  --input outputs/HALTING_RUN/analysis/depth_complexity/validation/depth_complexity.csv \
+  --output-dir outputs/HALTING_RUN/analysis/depth_complexity/validation/figures
+python plot/depthWorsening.py \
+  --input outputs/HALTING_RUN/analysis/depth_worsening/validation/depth_worsening.csv \
+  --output-dir outputs/HALTING_RUN/analysis/depth_worsening/validation/figures
+```
+
+分别生成五种复杂度与深度的散点图、Oracle/停止深度比例直方图、相邻深度误差变差比例图，
+输出 SVG 和 300 DPI PNG。绘图要求 Matplotlib 可找到真实 Arial 字体；
+Windows/WSL 可读取 Windows 字体，Linux 需准备 Arial。
+本机已验证的字体环境配置与原始结果路径见 [验证记录](VALIDATION.md)。
+
+## 代码结构与 Trace
 
 ```text
-Dataset -> collate -> SupervisedBatch
-Task -> Model(GraphInputs, PropertyContext) -> ModelOutput -> loss
-Trainer -> Task.run -> backward/optimizer/checkpoint/Metric
-Checkpoint -> 独立 predict -> CSV -> 离线 analysis
+Dataset → collate → SupervisedBatch
+Task → Model → ModelOutput → loss
+Trainer → backward / optimizer / metrics / checkpoint
+Checkpoint → predict → CSV → analysis / plot
 ```
 
-- `contracts.py`：GraphInputs 与带标签的 SupervisedBatch 分开。
-- `data/`：QM9 adapter、稳定身份与持久化划分；不计算 loss。
-- `models/backbones/EGNN.py`：initializer、一次消息更新与节点解码读出。
-- `models/operators.py`：参数所有权；tied 仅注册一个 step，untied 使用独立 ModuleList。
-- `models/execution.py`：固定执行次数；不定义 loss。
-- `models/heads.py`：带 property context 的共享预测头。
-- `tasks/`：目标变换、监督协议与 loss；不管理 optimizer。
-- `training/`：通用训练与 checkpoint；不读取 depth 或具体模型类型。
-- `metrics/`：按样本累计 MAE/RMSE，避免小尾批次被过度加权。
-- `evaluation/`：逐深度预测流式写盘。
-- `analysis/`：仅消费结果文件，不参与 Trainer。
+- `src/eqcompute/data/`：PyG QM9 适配、样本身份、划分和 batch。
+- `src/eqcompute/models/`：EGNN、参数共享、固定/随机/自适应执行和停止器；当前坐标固定，使用分子内完全有向图。
+- `src/eqcompute/tasks/`：目标归一化、训练阶段、冻结规则、监督与 loss。
+- `src/eqcompute/training/`：优化器、scheduler、checkpoint 初始化与恢复、通用训练循环。
+- `src/eqcompute/evaluation/`：固定深度和 adaptive 预测导出。
+- `src/eqcompute/analysis/` 与 `plot/`：结果分析和绘图。
 
-当前唯一骨架为 `model.name=egnn`：H/C/N/O/F 的 15 维原子编码、分子内完全
-有向图（无自环）、距离平方、消息门控、sum 聚合与消息 LayerNorm、残差节点更新。
-坐标固定；节点解码 MLP 后 sum pooling，再经过共享标量预测头。
-化学键 edge_index/edge_attr 保留在输入中，传播图由骨架自行构建。
-完全图复杂度为每个分子 O(N²)，当前面向 QM9；模型来源与官方数值对照见
-[EGNN 使用说明](docs/EGNN.md)。数据与训练协议沿用本项目配置。
-
-直接操作单步：
-
-```python
-state = model.initialize(batch.graph)
-for k in range(1, 5):
-    state = model.step(state, batch.graph, depth=k)
-    graph_repr = model.readout(state, batch.graph)
-    prediction = model.head(graph_repr, task.context)
-```
-
-`depth=k` 仅为 untied 模式选择参数；EGNNStep 自身不知道总深度。
-tied 模式所有 k 都返回同一算子。untied 超出已注册层数会报错。
-
-## Trace
+显式请求逐层预测或状态：
 
 ```python
 from eqcompute.models.trace import TraceSpec
 
-out = model(batch.graph, task.context)  # 不创建逐步状态列表
+# 固定深度模型：逐层预测；保留梯度，可用于多深度监督。
 out = model(batch.graph, task.context, trace=TraceSpec(predictions=True))
-out = model(batch.graph, task.context, trace=TraceSpec(
+
+# AdaLoop：完整展开，收集逐层预测及指定深度的状态。
+out = model(batch.graph, task.context, execution_mode="diagnostic", trace=TraceSpec(
     node_features=True, graph_features=True, positions=True, depths=(1, 3)
 ))
 ```
 
-`predictions_by_depth` 保留梯度，供多深度监督使用。
-`trace` 中的表示是 detached CPU copies，仅供分析。实际递归 state 不 detach。
-关闭 trace 不消除反向传播必需的激活；它消除的是额外保存的逐步输出。
-图表示和节点表示只在请求时保存。进行大批量表示分析时应按 batch 消费，不能累积整套数据。
+`predictions_by_depth` 按执行模式和监督需要保存预测；`trace` 表示为 detached CPU copies。
+AdaLoop 的普通 eval 推理默认实际提前停止；完整轨迹需显式选择 `diagnostic`。
 
-## 输出与预测
-
-每次运行产生唯一目录，名称包含 target、tying、depth、监督方式、seed 和运行后缀：
-
-```text
-outputs/<experiment_name>__<UTC_timestamp>_<run_id>/
-  config.yaml
-  metadata.json
-  split_ids.json
-  checkpoints/{best.pt,last.pt}
-  metrics.csv
-  predictions/
-  logs/train.log
-```
-
-`best.pt` 按 validation 的最终输出 MAE 选择；all_steps 的 loss 是各步平均，但 checkpoint
-仍按最终 MAE 选取。测试集不用于选深度、checkpoint 或训练超参数。
+## 验证
 
 ```bash
-python scripts/predict.py --checkpoint outputs/<run>/checkpoints/best.pt --split test
-python scripts/predict.py --checkpoint outputs/<run>/checkpoints/best.pt --split validation
+QM9_ROOT=data/qm9 python -m pytest -q
+python -m ruff check src tests scripts plot
+git diff --check
 ```
 
-导出文件为 `predictions/test_best_by_depth.csv` 等。
-每行对应 sample_id × property × readout_depth；含 checkpoint SHA256、split ID、训练深度、
-监督方式、seed、真实值、预测值和单位。同一个 batch 的所有深度来自一次执行轨迹。
-已有文件默认拒绝覆盖，可显式传入 `--overwrite`。
+测试不会下载 QM9。未设置有效 `QM9_ROOT` 时跳过真实数据集成测试；CUDA 不可用时跳过 GPU 测试。
+绘图测试也要求 Arial 字体。
 
-```bash
-python -m eqcompute.analysis.depthCurves \
-  outputs/<run>/predictions/test_best_by_depth.csv \
-  --output outputs/<run>/predictions/depth_curve.png
-```
-
-可追加 `--sample-id qm9:123`，样本必须实际存在于该 CSV。
-本模块只画误差曲线，不计算 Oracle 或 Minimum Sufficient Depth。
-
-## 汇总一次深度扫描
-
-`scripts/evalDepth.py` 读取当次扫描的 `jobs.json`，在终端按训练 Depth 汇总各 seed 的
-validation MAE 与 test MAE：
-
-```bash
-python scripts/evalDepth.py \
-  --sweep-dir outputs/_depth_sweeps/<批次目录> \
-  --device cuda:0
-```
-
-默认 `--device auto`；可指定 `cpu`。可选 `--batch-size 128` 控制缺失预测的评估批大小，
-`--precision 6` 控制小数位数。命令应在已安装项目的 Python 环境中运行。
-
-终端表格示例（以下数字仅作格式示意）：
-
-```text
-Target: mu | Unit: D | Model: egnn | weight_tying: false | supervision: final
-Mean ± sample SD (ddof=1); Seeds = evaluated/planned; checkpoint = best.pt.
-Depth  Seeds  Val MAE              Test MAE
------  -----  -------------------  -------------------
-1      3/3    0.125000 ± 0.008000  0.132000 ± 0.010000
-2      3/3    0.110000 ± 0.006000  0.118000 ± 0.007000
-4      1/3    0.098000 ± N/A       0.105000 ± N/A
-```
-
-每个 seed 使用按 validation MAE 选出的 `best.pt`：Val MAE 读取 checkpoint 中保存的
-`best_value`，Test MAE 使用该 checkpoint 在**最终训练深度**的预测计算，不混入中间读出。
-`±` 为各 seed 的样本标准差（ddof=1），只有一个有效 seed 时显示 `± N/A`，
-某个深度没有有效 seed 时两项指标显示 `N/A`。指标沿用目标属性的原始物理单位。
-
-脚本复用 `predictions/test_best_by_depth.csv`；缺失、checkpoint 哈希不匹配、
-实验信息不匹配或最终深度测试样本不完整时，调用现有预测模块重新评估并替换该 CSV。
-首次评估需访问 checkpoint 中记录的数据路径，多个任务按顺序在指定设备上评估。
-复制扫描目录后优先使用批次内的 `runs/k<depth>_s<seed>/` 寻找运行目录，
-数据集仍需在 checkpoint 记录的位置可访问。
-
-失败、未完成、缺少 checkpoint 或测试评估失败的任务会跳过并在 stderr 说明原因；
-Val/Test 只汇总同一组成功评估的 seed，`Seeds` 显示有效数/计划数。
-拒绝混合不同目标、单位、模型、数据划分、参数共享设置或监督协议，也拒绝重复 depth/seed。
-表格写入 stdout，可用 `> summary.txt` 保存；全部成功退出码为 0，有跳过任务为 1，
-输入配置错误为 2。测试集结果用于报告，深度与超参数选择仍依据验证集。
-
-## 分子复杂度与深度分析
-
-对单次 AdaLoop 训练目录，一条命令完成完整轨迹导出、五种复杂度统计、误差最优 Oracle 和模型停止深度分析。
-必须存在 `checkpoints/best.pt` 与 `split_ids.json`，仅支持 adaptive checkpoint；
-不会回退到可能仍在 warm-up 的 `last.pt`。数据集需在 checkpoint 保存的位置可访问，
-例如 WSL 训练得到的路径应在相同 WSL 环境执行。
-
-先用验证集探索并固定分析设置，再用测试集生成最终报告图：
-
-```bash
-python scripts/depthComplexity.py --run-dir outputs/<run>
-python scripts/depthComplexity.py --run-dir outputs/<run> --split test
-```
-
-可选 `--device auto|cpu|cuda:0`、`--batch-size 96`。
-默认 split 为 validation，batch size 沿用训练配置。
-
-预测复用 `predictions/<split>_best_diagnostic_by_depth.csv`。
-分析输出至 `analysis/depth_complexity/<split>/`：
-
-- `complexity.csv`：每个分子的全部五种复杂度。
-- `oracle.csv`：每个分子的误差最优深度，误差为按训练集 scale 归一化的绝对误差。
-- `depth_complexity.csv`：每个分子一行，误差最优深度、模型停止深度、全部复杂度及来源信息。
-- `summary.json`：样本数、各深度频数和占比、不同深度数量、Oracle 与停止深度一致率及输入哈希。
-
-默认检查并复用有效结果，补齐缺失产物，不重复推理。来源不符或内容不完整时会报错；
-使用 `--overwrite` 重新生成当前划分的预测和分析结果。
-不会修改其他划分的数据。终端打印统计摘要和输出位置。
-
-绘图独立执行，只读取分析 CSV，无需模型、PyTorch 或数据集：
-
-```bash
-python plot/depthComplexity.py \
-  --input outputs/<run>/analysis/depth_complexity/test/depth_complexity.csv \
-  --complexity all \
-  --output-dir outputs/<run>/analysis/depth_complexity/test/figures
-```
-
-`--complexity` 支持以下指标，默认 all 分别生成五张图：
-
-| 指标 | 含义 |
-|---|---|
-| atom_count | 包括氢的总原子数 |
-| heavy_atom_count | 重原子数（原子序数大于 1） |
-| radius_gyration | 等权几何中心回转半径，单位 Å，不做质量加权 |
-| element_count | 元素种类数 |
-| element_entropy | 元素组成熵，使用自然对数 |
-
-每张图包含所有分子，纵轴为 Depth，两类散点固定如下：
-
-| 类型 | 定义 | 颜色 | 点形 |
-|---|---|---|---|
-| oracle_depth | 最小绝对预测误差对应深度 | #C30078 | 圆形 |
-| halt_depth | 控制器按保存的 CDF 阈值选择的停止深度 | #529F9A | 方形 |
-
-Oracle 平局选择最浅深度。halt_depth 不等于 diagnostic 模式下恒为 Kmax 的 executed_depth。
-两种定义可能相同，结果不预设分子之间一定存在差异。散点图仅检验这个 checkpoint、
-这个预测性质下的深度差异，不能证明复杂度与最优深度有因果关系。
-Oracle 使用真实标签，仅用于离线分析，不用于部署推理或测试集调参。
-
-默认使用小点、透明度及仅在显示层生效的扰动：离散横轴 ±0.18，纵轴 ±0.04，
-两类纵坐标偏移分别为 −0.18、+0.18。按 sample_id 排序，同一分子共用随机扰动；
-`--jitter-seed` 默认 42；`--no-jitter` 关闭所有抖动和类别错位。
-CSV、统计及整数刻度不受影响。图中仅保留坐标轴、刻度和图例，移除标题及下方说明，所有文字使用 Arial。
-
-每个指标同时输出 `depth_complexity_<metric>.svg` 和 `.png`。
-SVG 保留矢量散点及可编辑文字，PNG 为 300 DPI；不输出 PDF，不抽样，不添加拟合线。
-绘图需要 Arial 字体；WSL 下自动读取 Windows 的 Arial，无需复制字体文件。
-颜色指定值为散点基础色，透明度叠加后的显示颜色随背景和重合情况变化。
-
-### 深度分布比例直方图
-
-直接读取上述分析 CSV，将两种深度绘制为上下两个直方图：
-
-```bash
-python plot/depthDistribution.py \
-  --input outputs/<run>/analysis/depth_complexity/validation/depth_complexity.csv \
-  --output-dir outputs/<run>/analysis/depth_complexity/validation/figures
-
-# 也可以使用单独保存的分析表
-python plot/depthDistribution.py --input outputs/depth_complexity.csv --output-dir outputs/figures
-```
-
-横轴为 1…Kmax 的整数深度，每个整数对应宽度为 1 的区间；
-纵轴为该深度分子数占总分子数的比例，以百分比显示。
-每种深度分别归一化为 100%，不将两种类型合并为一个分母；零频数深度仍保留。
-上、下依次为 Error-optimal depth、Model halt depth；共享横轴范围和刻度；各子图纵轴上限为严格高于最高柱比例的最小整十百分比。
-柱体透明度为 0.55，使用同色边框，颜色及 Arial 字体沿用复杂度散点图。
-各子图右上角放置单项图例，仅底部显示横轴刻度文字及 Depth 标签；各子图显示百分比纵轴。
-画布为 8.5 × 6 英寸，两个子图上下相连无间隙；坐标轴标签及刻度字号为 14.4，图例字号为 12.96。
-无标题和下方说明，不添加抖动或类别错位。
-输出 `depth_distribution.svg`（矢量图形、可编辑文字）与
-`depth_distribution.png`（300 DPI）。无需重新推理，不按分子复杂度分组或筛选样本。
-
-### 相邻深度预测误差变差比例
-
-从训练目录读取 adaptive `checkpoints/best.pt` 和保存的划分，复用或生成完整 diagnostic 预测：
-
-```bash
-python scripts/depthWorsening.py --run-dir outputs/<run>
-python scripts/depthWorsening.py --run-dir outputs/<run> --split test
-
-python plot/depthWorsening.py \
-  --input outputs/<run>/analysis/depth_worsening/validation/depth_worsening.csv \
-  --output-dir outputs/<run>/analysis/depth_worsening/validation/figures
-```
-
-分析默认使用 validation；`--device auto`、未指定的 `--batch-size` 沿用已有推理配置。
-缺失 best.pt 不回退 last.pt；Kmax 必须至少为 2。有效预测缓存直接复用，缺失分析产物自动补齐，
-缓存来源或内容不符时明确报错；`--overwrite` 重新生成当前划分的预测和分析结果。
-输出 `analysis/depth_worsening/<split>/depth_worsening.csv` 及 `summary.json`，
-记录每对相邻深度的总样本数、变差/持平/改善数量、变差比例、分析口径和来源哈希。
-独立绘图只需分析 CSV，无需模型、数据集或重新推理。
-
-对每个分子用原始单位的绝对误差 $e_{i,k}=|\hat y_{i,k}-y_i|$，统计
-$r_k=\frac{1}{N}\sum_{i=1}^{N}\mathbf{1}[e_{i,k+1}>e_{i,k}]$。
-严格大于才算变差，持平不计入，不引入容差；每层分母都是全部 N 个分子，包括已停止的分子。
-横轴 k 表示从 k 到 k+1 的变化，只显示 1…Kmax−1，各柱比例独立，合计不要求为 100%。
-这描述单分子误差变差的发生比例，不等于整体 MAE 的变化幅度。
-仅含 optimal/halt depth 的 `depth_complexity.csv` 无法恢复这些逐深度比较。
-
-使用一次批量直方图调用，区间为 [k−0.5, k+0.5)，保留零比例深度，无抖动。
-纵轴以百分比显示，上限为严格高于最大柱高的最小整十百分比（最高柱 100% 时为 110%）。
-颜色 `#4370B4`，透明度 0.55，同色边框线宽 0.8；Arial 字号 14.4，
-画布 8.5 × 6 英寸，无标题、图下注释或图例。
-输出 `depth_worsening.svg`（矢量柱体、可编辑文字）及 `depth_worsening.png`（300 DPI）。
-验证集用于探索，固定分析设置后使用测试集绘制最终报告，不根据测试结果调整停止策略。
-
-## 恢复训练
-
-```bash
-python scripts/train.py experiment=qm9_smoke trainer.epochs=5 \
-  resume=outputs/<previous_run>/checkpoints/last.pt
-```
-
-恢复到新运行目录，metadata 保留来源。除增加 epochs 或改变设备外，需保持实验配置一致。
-恢复模型、optimizer、目标变换、Python/NumPy/Torch/CUDA RNG 和 loader generator；
-保留来源运行已有的 best checkpoint。新 metrics.csv 只记录新增 epochs。
-支持 epoch 边界恢复，不支持中途 batch 恢复。CPU 测试检查逐位一致；CUDA reduction
-可能存在浮点非确定性，不能保证跨设备/软件版本逐位复现。
-checkpoint 含 Python RNG 对象，只加载本项目生成且可信的文件。
-
-## 验收范围
-
-pytest 覆盖：离线 batch/ID、split、目标变换、单步与 wrapper 一致性、参数共享、梯度、
-trace、旋转/平移/反射/置换、批间隔离、空邻域、小图过拟合、checkpoint 恢复、逐深度导出。
-真实 QM9 子集的 GPU 验证记录另见 `VALIDATION.md`。
-
-AdaLoop 通过独立 ExecutionPolicy 和 Task 实现；后续 PaiNN 可增加自己的 state、step、readout。
-模型循环仍在 execution 层，Trainer 只负责优化、阶段通知和统计。
+2026-10-22 已在 `AdaLoopEGNN` 环境、RTX 3060 上完成 **225 passed、0 failed、0 skipped**；
+MAD 和 standard 两种归一化均完成两阶段 CUDA 短程验收，预测器状态保持不变，停止深度一致率为 100%。
+结果与复现条件见 [VALIDATION.md](VALIDATION.md)。完整 1000 + 500 轮训练需另行启动。

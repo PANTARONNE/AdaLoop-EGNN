@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - qm9_adaloop_egnn_predictor
+  - _self_
+
+task:
+  phase: halting
+trainer:
+  epochs: 500

@@ -48,12 +48,6 @@ class Trainer:
         checkpoint = load_checkpoint(path)
         for key in ("model", "task", "dataset", "optimizer", "loader", "seed"):
             saved, current = checkpoint["config"][key], self.config[key]
-            if key == "task":
-                # Missing entropy coefficients in legacy adaptive runs mean no regularization.
-                if saved.get("name") == "adaptive_regression":
-                    saved = {"entropy_beta": 0.0, **saved}
-                if current.get("name") == "adaptive_regression":
-                    current = {"entropy_beta": 0.0, **current}
             if saved != current:
                 raise ValueError(f"Resume configuration mismatch: {key}")
         if (
@@ -69,6 +63,9 @@ class Trainer:
             raise ValueError("Resume scheduler mismatch; keep the original scheduler.t_max")
         if (checkpoint.get("scheduler") is None) != (self.scheduler is None):
             raise ValueError("Checkpoint scheduler state is missing or incompatible")
+        for key in ("init_from", "init_from_sha256"):
+            if key in checkpoint["metadata"]:
+                self.metadata[key] = checkpoint["metadata"][key]
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         if self.scheduler is not None:

@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - qm9_adaloop_egnn
+  - qm9_adaloop_egnn_predictor
   - _self_
 
 model:
@@ -9,8 +9,6 @@ model:
     depth: 4
   halting:
     hidden_dim: 16
-task:
-  warmup_epochs: 1
 trainer:
   epochs: 3
 loader:

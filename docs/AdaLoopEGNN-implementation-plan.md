@@ -1,5 +1,7 @@
 # AdaLoop-EGNN 实现计划：复用 EGNNOrig
 
+> 历史设计记录：训练策略已替换为独立预测器与停止器阶段；当前配置、冻结规则和指标以 [AdaLoop 使用说明](AdaLoopEGNN.md) 为准。下文 warm-up/联合训练方案不再适用于当前代码。
+
 > 2026-10-19 清理说明：第一步已移除旧半径图 EGNN 与 QM9Orig XYZ 预处理，
 > 第二步已将保留的 EGNNOrig 骨架统一更名为 EGNN，数据使用 PyG QM9。
 > 下文保留当时的名称与设计，不作为现有文件清单。当前入口见 [EGNN.md](EGNN.md)。

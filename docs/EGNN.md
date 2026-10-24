@@ -4,7 +4,7 @@
 当前数据：`src/eqcompute/data/QM9.py`，直接读取本地 PyG QM9 缓存。
 入口：`configs/experiment/qm9_egnn.yaml`。
 不传 `experiment` 时默认使用同一基线。
-共享参数入口：`qm9_loop_egnn`；自适应入口：`qm9_adaloop_egnn`。
+共享参数入口：`qm9_loop_egnn`；自适应入口：`qm9_adaloop_egnn_predictor` / `qm9_adaloop_egnn_halting`。
 
 **模型来源与范围**
 
@@ -66,7 +66,7 @@ U0 与 PyG 的 U0_atom 是不同目标，不将二者隐式互换。
 python scripts/train.py experiment=qm9_egnn task.target=mu trainer.device=cuda:0
 python scripts/train.py experiment=qm9_loop_egnn task.target=mu \
   model.execution.depth=8 trainer.device=cuda:0
-python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu trainer.device=cuda:0
+python scripts/train.py experiment=qm9_adaloop_egnn_predictor task.target=mu trainer.device=cuda:0
 ```
 
 AdaLoop 短程验收：
@@ -100,7 +100,7 @@ python scripts/evalDepth.py --sweep-dir outputs/_depth_sweeps/<batch> --device c
 增加 tied 模型深度不增加参数量，仍增加执行成本。untied 参数则随层数增长。
 固定模型 best.pt 按 validation 最终深度 MAE 选择；中间读出未受直接监督。
 M0 诊断配置使用 all_steps，可用于单个 checkpoint 的逐深度 Oracle 分析。
-自适应的 hard/diagnostic 导出、warm-up 恢复和概率损失见 AdaLoop 说明。
+自适应的 hard/diagnostic 导出、两阶段训练与恢复和概率损失见 AdaLoop 说明。
 
 **验收**
 

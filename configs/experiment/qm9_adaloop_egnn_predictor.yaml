@@ -16,6 +16,8 @@ task:
   name: adaptive_regression
   supervision: adaptive
   normalization: mad
-  warmup_epochs: 300
+  phase: predictor
   entropy_beta: 0.01
-experiment_name: qm9_${task.target}_adaloop_k${model.execution.depth}_s${seed}
+trainer:
+  epochs: 1000
+experiment_name: qm9_${task.target}_adaloop_${task.phase}_k${model.execution.depth}_s${seed}

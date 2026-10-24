@@ -9,7 +9,8 @@
 | 配置 | 用途 |
 |---|---|
 | `qm9_loop_egnn_diagnostic` | M0：共享参数、Kmax=12、所有深度等权 MAE 监督 |
-| `qm9_adaloop_egnn` | 单性质自适应模型，hidden_dim=128、Kmax=24 |
+| `qm9_adaloop_egnn_predictor` | 预测器训练，1000 epochs，hidden_dim=128、Kmax=24 |
+| `qm9_adaloop_egnn_halting` | 冻结预测器，仅训练停止器，500 epochs |
 | `qm9_adaloop_egnn_smoke` | 本地 PyG QM9 短程验收，hidden_dim=32、Kmax=4、3 epochs |
 
 默认 `task.target=mu`、`task.normalization=mad`，归一化仅用训练标签拟合。
@@ -93,7 +94,7 @@ $\sum_{k=1}^{K}p_{b,k}=1$。末步直接设 $q_{b,K}=1$ 并接收全部剩余质
 
 **Loss 设计**
 
-训练目标是停止分布下的期望预测误差加停止分布熵正则。标签先转换为
+停止器阶段的训练目标是停止分布下的期望预测误差加停止分布熵正则。标签先转换为
 $\tilde y_b=(y_b-m)/s$，其中 $m$、$s$ 仅在训练集拟合。默认 `mad` 使用训练均值 $m$
 和平均绝对偏差 $s=\operatorname{mean}_{\mathrm{train}}|y-m|$
 （这里不是中位数绝对偏差）；`standard` 使用总体标准差，二者的 scale 均下限截断为
@@ -141,19 +142,29 @@ $|\sum_k p_{b,k}\hat y_{b,k}-\tilde y_b|$。例如目标为 2、两步预测为 
 更高熵的停止分布。总损失可能为负，不代表预测误差为负；比较预测质量应看 MAE
 和 prediction_loss。比较不同实验时需统一 normalization 和熵正则系数。
 
-自适应阶段完整展开到 $K$，不采样离散停止深度，也不通过 CDF 阈值选择反向传播。
-$\hat y_{b,k}$ 与 $p_{b,k}$ 都保留计算图：预测项训练 backbone/readout/head，
-并通过停止质量训练 controller。Controller 根据各深度的预测误差分配停止质量，
-无需 Oracle 停止标签或 REINFORCE。熵正则通过停止分布训练 controller，
-并沿现有可微路径传回 backbone；当前目标不包含计算成本或 Oracle 监督。
+停止器阶段完整展开到 $K$，不采样离散停止深度，也不通过 CDF 阈值选择反向传播。
+预测器（initializer、共享 backbone、readout/head）全部冻结，使用 eval 模式；
+仅 $p_{b,k}$ 保留对 controller 的梯度。Controller 根据固定预测器的各深度误差分配停止质量，
+无需 Oracle 停止标签或 REINFORCE。熵正则也仅更新 controller，当前目标不包含计算成本。
 
-Warm-up 阶段每个 batch 均匀抽取一个深度 $k^\star\sim\mathrm{Uniform}\{1,\ldots,K\}$，
+预测器阶段每个 batch 均匀抽取一个深度 $k^\star\sim\mathrm{Uniform}\{1,\ldots,K\}$，
 整个 batch 执行到该深度，使用
-$\mathcal{L}_{\mathrm{warmup}}=\frac{1}{B}\sum_b\ell_{b,k^\star}$。
-此时不调用 controller，不加入熵正则，仅训练共享 backbone/readout/head，
-使其在不同深度都能输出预测；进入自适应阶段后再联合学习停止策略。
-Validation 始终使用 `full` 模式计算包含熵正则的上述自适应 loss，
-包括 warm-up 期间的 validation；此时仅 train 的熵项不适用。
+$\mathcal{L}_{\mathrm{predictor}}=\frac{1}{B}\sum_b\ell_{b,k^\star}$。
+此阶段不调用 controller，不加入熵正则，仅训练预测器。
+验证遍历全部深度，也不调用 controller；validation loss 为全部深度的归一化误差平均值。
+
+预测器的 `validation_mae` 为原单位下的逐分子最优深度误差：
+
+$$
+\mathrm{oracle\ MAE}=\frac1N\sum_b\min_{1\le k\le K}|s\hat y_{b,k}+m-y_b|.
+$$
+
+并列时取较浅深度。该值用于保存预测器 `best.pt`，它使用真实标签选层，
+是理想选层误差下限，不是实际可部署的推理性能。
+同时记录 `validation_mean_depth_mae`（所有分子、所有深度平均 MAE）、
+`validation_final_depth_mae`（末层 MAE）及 `validation_oracle_depth`。
+停止器阶段 validation 使用 `full` 模式和上述带熵正则的 loss，
+MAE 则使用 CDF 首次达到阈值的单层预测，不含熵项，也不是概率加权 MAE。
 
 实现见 [adaptive_loss 与训练阶段](../src/eqcompute/tasks/adaptiveRegression.py)、
 [标签变换](../src/eqcompute/tasks/targetTransform.py)；
@@ -161,9 +172,10 @@ Validation 始终使用 `full` 模式计算包含熵正则的上述自适应 los
 
 **训练与停止语义**
 
-默认 1000 epochs 中前 300 epochs 为 warm-up，每 batch 均匀抽一个深度，只监督该深度。
-后续完整展开到 Kmax，联合训练 controller。训练过程不声称节省消息传播计算。
-`task.warmup_epochs` 是显式值；缩短训练需同时调整，恢复时不重新按比例计算。
+使用 `task.phase=predictor` / `halting` 的两个独立训练配置，分别默认 1000 / 500 epochs。
+每阶段使用新的优化器及独立 cosine 周期，起始学习率沿用对应属性的现有设置。
+不再自动切换阶段，不保留旧联合训练模式或 `task.warmup_epochs`。
+停止器训练与验证完整展开，训练过程不声称节省消息传播计算。
 
 推理选择第一个 `sum_{j<=k}p_j >= threshold` 的深度，输出该步预测。
 已停止分子的节点和边从后续消息传播中移除；不是继续全 batch 计算后仅冻结特征。
@@ -171,68 +183,64 @@ Validation 始终使用 `full` 模式计算包含熵正则的上述自适应 los
 
 | 模式 | 用途 | 计算 |
 |---|---|---|
-| `warmup` | 随机深度训练 | 执行到抽中的深度 |
-| `full` | 自适应训练和 validation 损失 | 全部执行；同时按 CDF 选择 hard 输出计算 MAE |
+| `random_depth` | 预测器随机深度训练 | 执行到抽中的深度 |
+| `predictor_full` | 预测器验证 | 全部执行，用预测 trace 收集各层输出，不调用停止器 |
+| `full` | 停止器训练和 validation 损失 | 全部执行；同时按 CDF 选择 hard 输出计算 MAE |
 | `diagnostic` | 离线轨迹分析 | 全部执行，提供逐深度预测和概率 |
 | `hard` | 实际推理 | 批内压缩 active graphs，必须在 eval + no_grad/inference_mode 下运行 |
 
 普通 `model.eval()` 推理默认 hard。完整 trace 必须显式指定 diagnostic；打开 trace 不会
-悄悄改变计算协议。full/diagnostic 总是保留全部可微预测用于损失，不受 trace 深度选择影响；
+悄悄改变计算协议。full/diagnostic 总是保留全部逐层预测用于损失，不受 trace 深度选择影响；
 trace 的 depth 选择只控制 detached 表示快照。hard 不伪造未执行的未来预测或完整停止分布。
 
-**训练示例（以下完整训练命令未在本轮自动执行）**
-
-在已激活项目环境的 WSL Bash 中：
+**训练示例**
 
 ```bash
-python scripts/train.py experiment=qm9_loop_egnn_diagnostic task.target=mu
-python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu
-python scripts/train.py experiment=qm9_adaloop_egnn task.target=mu task.entropy_beta=0
-python scripts/train.py experiment=qm9_adaloop_egnn task.normalization=standard
+python scripts/train.py experiment=qm9_adaloop_egnn_predictor task.target=mu
+python scripts/train.py experiment=qm9_adaloop_egnn_halting task.target=mu \
+  init_from=outputs/<predictor_run>/checkpoints/best.pt
 ```
 
-直接读取本地 QM9 缓存的短程训练：
+`init_from` 必须指向预测器阶段的 checkpoint，可指定 `best.pt` 或 `last.pt`。
+只迁移预测器权重及归一化参数，不复制停止器、优化器、scheduler、epoch 或历史最佳指标。
+来源阶段、模型配置、目标属性、归一化设置和数据划分必须匹配；
+输出 metadata 记录来源路径与 SHA256。停止器无 `init_from` 或 `resume` 时直接报错。
+例如关闭停止器熵正则可在第二条命令追加 `task.entropy_beta=0`。
 
-```bash
-python scripts/train.py experiment=qm9_adaloop_egnn_smoke trainer.device=cuda
-```
-
-M0 本轮仅验收代码，没有启动完整诊断实验。M1–M3 已用本地 PyG QM9 完成短程
-链路验收；smoke 脚本与常规训练使用同一个正式入口。可复现该验收：
+本地真实 QM9 短程验收：
 
 ```bash
 python scripts/smokeAdaLoop.py --data-root data/qm9 --device auto
 ```
 
-该脚本要求已有 `processed/data_v3.pt`，不下载数据。固定使用 mu、MAD、128/32/32 个真实
-分子、3 epochs（1 warm-up + 2 adaptive），记录数据来源和样本划分；用 full 与 hard
-预测一致性及实际 node/edge step 计数验证执行链路。可传 `--normalization standard`。
-脚本调用常规 `train()`，随后从 best.pt 重建模型、Task 和数据集进行 full/hard 对照。
+脚本要求已有 `processed/data_v3.pt`，不下载数据。使用 mu、MAD、128/32/32 个分子，
+分别训练预测器 1 轮、停止器 2 轮，产生两个独立运行目录。
+检查冻结的预测器状态完全一致，并从停止器 `best.pt` 重建模型执行 full/hard 对照。
+汇总记录预测器目录及 oracle MAE、停止器 MAE 和预测一致性。
+可传 `--normalization standard`。单独使用 `qm9_adaloop_egnn_smoke` 配置默认只训练预测器。
 
 **Checkpoint 与日志**
 
 `last.pt` 每 epoch 保存 model/controller、optimizer、scheduler、task 阶段、transform 和 RNG。
-warm-up 期间不选择 best.pt；此时允许从只有 last.pt 的目录恢复。进入 adaptive 阶段后，
-按 CDF hard 输出的 validation MAE 选择 best.pt。训练恢复沿用原入口：
+两个阶段均从第一轮起选择 `best.pt`：预测器按 oracle validation MAE，停止器按 CDF MAE。
+同阶段恢复使用对应配置，保留原运行的配置覆盖参数，例如：
 
 ```bash
-python scripts/train.py experiment=qm9_adaloop_egnn \
-  resume=outputs/<run>/checkpoints/last.pt
+python scripts/train.py experiment=qm9_adaloop_egnn_predictor \
+  resume=outputs/<predictor_run>/checkpoints/last.pt
+python scripts/train.py experiment=qm9_adaloop_egnn_halting \
+  resume=outputs/<halting_run>/checkpoints/last.pt
 ```
 
-保持数据、模型、task（含 warm-up 和 entropy_beta）、优化器及 cosine 周期配置一致。
-熵系数同时保存在配置和 task 状态中，恢复时拒绝系数不一致。旧 adaptive checkpoint
-缺少 entropy_beta 时解释为 0；从这类 checkpoint 恢复需显式设置 `task.entropy_beta=0`。
-关闭正则时直接使用原预测损失，保持原有损失和梯度行为。
-本轮不实现从旧 Loop 权重迁移初始化 AdaLoop；resume 不是跨模型迁移。
+`resume` 与 `init_from` 互斥。恢复时保持模型、数据、task（含 phase 和 entropy_beta）、
+优化器及 cosine 周期一致；恢复停止器时不需要重新提供第一阶段文件。
+旧联合训练 checkpoint 不兼容，不实现从旧 Loop 权重迁移。
 
-metrics.csv 保存总 loss、prediction_loss、entropy_loss、expected_depth、halt_depth、executed_depth、
-首步/末步停止比例、分布熵和 warm-up 标记。按样本数加权；不适用统计留空，表头不变。
-entropy_loss 是带权重和符号的 $-\beta H$，满足 `loss = prediction_loss + entropy_loss`。
-warm-up 训练的 entropy_loss 为 0、halting_entropy 为空；自适应训练和 validation
-记录实际熵与熵项。best.pt 仍按 validation MAE 选取，不按包含正则的总损失选取。
-expected_depth 是 soft 期望；halt_depth 是选择结果；executed_depth 是实际执行长度。
-validation 使用完整轨迹，因此其 executed_depth=Kmax。
+`metrics.csv` 的指标按样本数加权。两个阶段分别记录在各自运行目录中。
+总损失满足 `loss = prediction_loss + entropy_loss`，预测器阶段 entropy_loss 恒为 0。
+停止器额外记录 expected_depth、halt_depth、executed_depth、首步/末步停止比例与分布熵。
+expected_depth 是 soft 期望，halt_depth 是 CDF 选择结果，executed_depth 是实际执行长度。
+两个阶段的 validation 都完整展开，因此 executed_depth=Kmax。
 
 **预测、Oracle 与结构指标**
 
@@ -242,6 +250,7 @@ python scripts/predict.py --checkpoint outputs/<run>/checkpoints/best.pt \
   --split validation --mode diagnostic
 ```
 
+上述停止推理示例应使用停止器阶段 checkpoint；预测器阶段的停止器尚未训练。
 自适应默认输出 `test_best_adaptive.csv`，一行对应一个分子，含 hard 预测与停止/执行深度。
 diagnostic 输出 `validation_best_diagnostic_by_depth.csv`，含 y_k、q、p、survival、soft E[K]。
 所有文件保存 checkpoint 哈希、split ID、CDF 阈值和执行模式。

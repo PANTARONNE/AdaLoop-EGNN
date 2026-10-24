@@ -17,6 +17,7 @@ loader:
 experiment_name: qm9_${task.target}_${model.name}_tied${model.weight_tying}_k${model.execution.depth}_${task.supervision}_s${seed}
 output_root: outputs
 resume: null
+init_from: null
 
 hydra:
   run:

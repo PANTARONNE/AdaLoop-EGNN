@@ -40,7 +40,7 @@ def test_presets_and_factory():
 
 @pytest.mark.parametrize("preset", [
     "qm9_smoke", "qm9_egnn", "qm9_loop_egnn", "qm9_loop_egnn_diagnostic",
-    "qm9_adaloop_egnn", "qm9_adaloop_egnn_smoke",
+    "qm9_adaloop_egnn_predictor", "qm9_adaloop_egnn_halting", "qm9_adaloop_egnn_smoke",
 ])
 def test_egnn_backbone_presets_use_local_pyg_qm9(preset):
     from pathlib import Path
@@ -57,6 +57,13 @@ def test_egnn_backbone_presets_use_local_pyg_qm9(preset):
     assert config.task.normalization == "mad"
     if config.task.name == "adaptive_regression":
         assert config.task.entropy_beta == 0.01
+        assert "warmup_epochs" not in config.task
+        if not preset.endswith("smoke"):
+            expected = "halting" if preset.endswith("halting") else "predictor"
+            assert config.task.phase == expected
+            assert config.trainer.epochs == (500 if expected == "halting" else 1000)
+            assert config.trainer.scheduler.t_max == config.trainer.epochs
+        assert config.init_from is None
     assert "subtract_thermo" not in config.dataset
     if preset.endswith("smoke"):
         assert (config.dataset.train_size, config.dataset.val_size, config.dataset.test_size) == (

@@ -31,7 +31,17 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
     config.task.normalization = normalization
     config.task.target = "mu"
     config.trainer.device = device
+    config.trainer.epochs = 1
+    predictor_output = train(config)
+    config.task.phase = "halting"
+    config.trainer.epochs = 2
+    config.init_from = str(predictor_output / "checkpoints/best.pt")
     output = train(config)
+    predictor = load_checkpoint(config.init_from)
+    halting = load_checkpoint(output / "checkpoints/last.pt")
+    for key, value in predictor["model"].items():
+        if not key.startswith("execution.controller."):
+            torch.testing.assert_close(value, halting["model"][key], rtol=0, atol=0)
     checkpoint_path = output / "checkpoints/best.pt"
     _, config, model, task, test, device, provenance = load_evaluation(
         checkpoint_path, "test", device
@@ -60,7 +70,10 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
     with (output / "predictions/test_best_adaptive.csv").open() as handle:
         rows = list(csv.DictReader(handle))
     summary = {
-        **metadata, "epochs": 3, "warmup_epochs": 1,
+        **metadata, "predictor_epochs": 1, "halting_epochs": 2,
+        "predictor_output": str(predictor_output),
+        "predictor_validation_oracle_mae": predictor["best_value"],
+        "predictor_unchanged": True,
         "train_samples": 128, "validation_samples": 32, "test_samples": 32,
         "normalization": normalization,
         "validation_mae": load_checkpoint(checkpoint_path)["best_value"],

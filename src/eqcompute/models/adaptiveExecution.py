@@ -1,4 +1,4 @@
-"""Shared EGNN execution: random-depth warm-up, exact expectation, or online exit."""
+"""Shared EGNN execution: random-depth prediction training, exact expectation, or online exit."""
 
 import math
 
@@ -19,7 +19,6 @@ class AdaptiveExecution(nn.Module):
             raise ValueError("threshold must lie strictly between 0 and 1")
         self.depth, self.threshold = depth, float(threshold)
         self.controller = HaltingController(hidden_dim, controller_dim, use_delta)
-        self.warmup = False
 
     def run(
         self, initializer, operators, readout, head, graph, context, trace, *, execution_mode=None
@@ -27,14 +26,16 @@ class AdaptiveExecution(nn.Module):
         if not operators.weight_tying:
             raise ValueError("Adaptive execution requires shared operators")
         trace.validate(self.depth)
-        mode = execution_mode or (
-            ("warmup" if self.warmup else "full") if self.training else "hard"
-        )
-        if mode not in ("warmup", "full", "diagnostic", "hard"):
+        mode = execution_mode or ("full" if self.training else "hard")
+        if mode == "predictor_full":
+            return FixedDepthExecution(self.depth).run(
+                initializer, operators, readout, head, graph, context, trace
+            )
+        if mode not in ("random_depth", "full", "diagnostic", "hard"):
             raise ValueError(f"Unknown adaptive execution mode: {mode}")
-        if mode == "warmup":
+        if mode == "random_depth":
             if not self.training:
-                raise ValueError("warmup mode is only available during training")
+                raise ValueError("random_depth mode is only available during training")
             depth = int(torch.randint(1, self.depth + 1, ()))
             output = FixedDepthExecution(depth).run(
                 initializer, operators, readout, head, graph, context, trace

@@ -4,6 +4,7 @@ from numbers import Real
 import torch
 
 from eqcompute.contracts import TaskResult
+from eqcompute.models.trace import TraceSpec
 from eqcompute.tasks.regression import RegressionTask
 
 
@@ -24,8 +25,8 @@ class AdaptiveRegressionTask(RegressionTask):
 
     def __init__(self, config, target_index, unit, transform):
         super().__init__(config, target_index, unit, transform)
-        if type(config.warmup_epochs) is not int or config.warmup_epochs < 0:
-            raise ValueError("warmup_epochs must be a nonnegative integer")
+        if config.phase not in ("predictor", "halting"):
+            raise ValueError("phase must be predictor or halting")
         beta = config.get("entropy_beta", 0.0)
         if (
             isinstance(beta, bool) or not isinstance(beta, Real)
@@ -33,32 +34,36 @@ class AdaptiveRegressionTask(RegressionTask):
         ):
             raise ValueError("entropy_beta must be a finite nonnegative number")
         self.entropy_beta = float(beta)
-        self.epoch = 0
 
-    def on_epoch_start(self, model, epoch):
-        self.epoch = epoch
-        model.execution.warmup = epoch < self.config.warmup_epochs
+    def configure_model(self, model):
+        """Apply before constructing the optimizer, including on resume."""
+        model.requires_grad_(self.config.phase == "predictor")
+        model.execution.controller.requires_grad_(self.config.phase == "halting")
 
-    def checkpoint_eligible(self, epoch):
-        return epoch >= self.config.warmup_epochs
+    def _training_mode(self, model):
+        if self.config.phase == "halting":
+            # Frozen predictor buffers must also remain unchanged.
+            for module in (model.initializer, model.operators, model.readout, model.head):
+                module.eval()
+        else:
+            model.execution.controller.eval()
 
     def predict(self, model, batch, trace=None, *, execution_mode=None):
         return model(batch.graph, self.context, trace=trace, execution_mode=execution_mode)
 
     def run(self, model, batch, stage):
-        warmup = stage == "train" and self.epoch < self.config.warmup_epochs
-        output = self.predict(model, batch, execution_mode="warmup" if warmup else "full")
+        if stage == "train":
+            self._training_mode(model)
+        if self.config.phase == "predictor":
+            return self._run_predictor(model, batch, stage)
+        output = self.predict(model, batch, execution_mode="full")
         target = self.targets(batch)
         normalized = self.transform.encode(target)
         info = output.adaptive
-        if warmup:
-            error = output.prediction - normalized
-            prediction_loss = (error.abs() if self.config.loss == "mae" else error.square()).mean()
-        else:
-            values = torch.stack(list(output.predictions_by_depth.values()), 1)
-            prediction_loss = adaptive_loss(
-                values, normalized, info.stop_probabilities, self.config.loss,
-            )
+        values = torch.stack(list(output.predictions_by_depth.values()), 1)
+        prediction_loss = adaptive_loss(
+            values, normalized, info.stop_probabilities, self.config.loss,
+        )
         p = info.stop_probabilities
         entropy = None if p is None else halting_entropy(p)
         entropy_loss = prediction_loss.new_zeros(())
@@ -81,24 +86,53 @@ class AdaptiveRegressionTask(RegressionTask):
             "halting_entropy": (
                 None if entropy is None else entropy.detach().item()
             ),
-            "warmup_fraction": float(warmup),
         }
         return TaskResult(
             loss, self.transform.decode(output.prediction.detach()), target.detach(),
             batch.graph.num_graphs, statistics,
         )
 
+    def _run_predictor(self, model, batch, stage):
+        target = self.targets(batch)
+        normalized = self.transform.encode(target)
+        statistics = {"entropy_loss": 0.0}
+        if stage == "train":
+            output = self.predict(model, batch, execution_mode="random_depth")
+            prediction = output.prediction
+            error = prediction - normalized
+            statistics["executed_depth"] = output.adaptive.executed_depth.float().mean().item()
+        else:
+            output = self.predict(
+                model, batch, TraceSpec(predictions=True), execution_mode="predictor_full",
+            )
+            values = torch.stack(list(output.predictions_by_depth.values()), 1)
+            error = values - normalized[:, None, :]
+            physical_error = (self.transform.decode(values) - target[:, None, :]).abs()
+            # argmin returns the shallowest depth on ties.
+            depths = physical_error.mean(-1).argmin(1)
+            prediction = values[torch.arange(len(depths), device=depths.device), depths]
+            statistics.update(
+                mean_depth_mae=physical_error.mean().item(),
+                final_depth_mae=physical_error[:, -1].mean().item(),
+                oracle_depth=(depths + 1).float().mean().item(),
+                executed_depth=float(model.execution.depth),
+            )
+        loss = (error.abs() if self.config.loss == "mae" else error.square()).mean()
+        statistics["prediction_loss"] = loss.detach().item()
+        return TaskResult(
+            loss, self.transform.decode(prediction.detach()), target.detach(),
+            batch.graph.num_graphs, statistics,
+        )
+
     def state_dict(self):
         return {
-            **super().state_dict(), "epoch": self.epoch,
-            "warmup_epochs": self.config.warmup_epochs,
+            **super().state_dict(), "phase": self.config.phase,
             "entropy_beta": self.entropy_beta,
         }
 
     def load_state_dict(self, state):
-        if state["warmup_epochs"] != self.config.warmup_epochs:
-            raise ValueError("Checkpoint warm-up schedule mismatch")
-        if state.get("entropy_beta", 0.0) != self.entropy_beta:
+        if state["phase"] != self.config.phase:
+            raise ValueError("Checkpoint phase mismatch")
+        if state["entropy_beta"] != self.entropy_beta:
             raise ValueError("Checkpoint entropy_beta mismatch")
         super().load_state_dict(state)
-        self.epoch = state["epoch"]

@@ -296,7 +296,6 @@ def test_plot_all_and_reject_bad_tables(run_fixture, tmp_path):
 def test_real_training_directory_end_to_end(adaptive_config, samples, tmp_path, monkeypatch):
     config = adaptive_config
     config.trainer.epochs = 2
-    config.task.warmup_epochs = 1
     config.output_root = str(tmp_path / "runs")
     manifest = {
         "split_id": "fixture-split", "sample_ids": {

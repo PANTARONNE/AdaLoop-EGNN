@@ -1,5 +1,36 @@
 # 验证记录
 
+**2026-10-22：AdaLoop 独立预测器 / 停止器训练完整验证**
+
+使用 conda 环境 `AdaLoopEGNN` 的 Python 3.11.17、PyTorch 2.3.1+cu121，
+在 NVIDIA GeForce RTX 3060 上完成验证。使用环境内解释器
+`/home/liuke/.pyenv/versions/miniconda3-latest/envs/AdaLoopEGNN/bin/python`。
+
+- 全套 pytest：**225 passed、0 failed、0 skipped**，28.47 秒。
+  已设置 `QM9_ROOT=data/qm9`，包含真实 QM9 集成测试、全部 CUDA 测试和绘图测试。
+- Ruff（`src tests scripts plot`）与 `git diff --check` 均通过。
+- MAD 和 standard 两种归一化分别完成真实 QM9 CUDA 两阶段短程训练：
+  mu、128/32/32 个分子、预测器 1 轮、停止器 2 轮、Kmax=4。
+  两次验收的冻结预测器状态均逐值完全一致，full/hard 停止深度一致率均为 100%。
+
+| 归一化 | 预测器 validation oracle MAE (D) | 停止器 validation MAE (D) | full/hard 最大归一化预测差异 |
+|---|---:|---:|---:|
+| mad | 1.079255465 | 1.246281002 | 1.192e-07 |
+| standard | 1.019835670 | 1.246163432 | 1.490e-07 |
+
+上述误差只用于短程链路验收，不是完整训练基准；未启动 1000 + 500 轮正式训练。
+测试仅有一条 PyG 上游 `torch_geometric.distributed` 弃用警告。
+
+上次的 Arial 失败通过加载本地真实字体解决：
+`XDG_DATA_HOME=/tmp/adaloop-font-data`，字体为该目录 `fonts/Arial*.TTF`；
+缓存隔离至 `XDG_CACHE_HOME=/tmp/adaloop-validation-cache` 和
+`MPLCONFIGDIR=/tmp/adaloop-validation-mpl`。未替换字体、跳过绘图断言或修改绘图代码。
+CUDA 需要在沙箱外运行；沙箱内报告不可用不代表宿主机 GPU 不可用。
+
+完整日志、pytest XML、执行脚本、checkpoint 和预测文件位于
+[本次验证目录](outputs/validation_two_stage_20261022_181045/)，
+命令与退出码见 [validation_summary.json](outputs/validation_two_stage_20261022_181045/validation_summary.json)。
+
 **2026-10-19：工作区清理第二步（统一命名为 EGNN）**
 
 用户确认第一步后执行。逐项检查源文件存在、目标文件不存在，再重命名 10 个文件：

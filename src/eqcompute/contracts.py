@@ -46,5 +46,5 @@ class TaskResult:
     prediction: Tensor  # Original physical units, detached.
     target: Tensor
     num_graphs: int
-    # Per-graph means; None denotes an inapplicable statistic (e.g. warm-up entropy).
+    # Per-graph means; None denotes an unavailable statistic.
     statistics: dict[str, float | None] = field(default_factory=dict)

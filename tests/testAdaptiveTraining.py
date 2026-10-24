@@ -5,12 +5,16 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from eqcompute.application import make_loader
+from eqcompute.application import make_loader, train
+from eqcompute.data.QM9 import DatasetBundle
+from eqcompute.factories import DATASETS
 from eqcompute.metrics.regression import RegressionMetrics
 from eqcompute.models.iterative import build_egnn
+from eqcompute.models.trace import ModelOutput
 from eqcompute.tasks.adaptiveRegression import AdaptiveRegressionTask, adaptive_loss
 from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import load_checkpoint, seed_everything
+from eqcompute.training.initialization import initialize_halting
 from eqcompute.training.optim import build_optimizer
 from eqcompute.training.trainer import Trainer
 
@@ -18,114 +22,205 @@ from eqcompute.training.trainer import Trainer
 def assemble(config, samples, directory):
     seed_everything(config.seed)
     model = build_egnn(config.model, config.task.target)
-    task = AdaptiveRegressionTask(config.task, 0, "D", TargetTransform(2.5, 1.0))
-    optimizer = build_optimizer(config.optimizer, model.parameters())
+    task = AdaptiveRegressionTask(config.task, 0, "D", TargetTransform(2.5, 2.0))
+    task.configure_model(model)
+    optimizer = build_optimizer(
+        config.optimizer, (p for p in model.parameters() if p.requires_grad),
+    )
     generator = torch.Generator().manual_seed(config.seed)
     directory.mkdir()
     trainer = Trainer(
         model, task, optimizer, RegressionMetrics, "cpu", directory,
         OmegaConf.to_container(config, resolve=True),
-        {"run_id": "fixture", "split_id": "fixture"}, generator,
+        {"run_id": "fixture", "split_id": "fixture", "dataset": "qm9", "property": "mu",
+         "unit": "D", "target_convention": "raw"}, generator,
     )
-    train = make_loader(samples, config.loader, True, generator)
-    validation = make_loader(samples, config.loader)
-    return trainer, train, validation
+    return (trainer, make_loader(samples, config.loader, True, generator),
+            make_loader(samples, config.loader))
 
 
+@pytest.mark.parametrize("phase", ["predictor", "halting"])
 @pytest.mark.parametrize("pause_after", [1, 2])
 @pytest.mark.parametrize("beta", [0.0, 0.01])
-def test_resume_across_warmup_and_adaptive(adaptive_config, samples, tmp_path, pause_after, beta):
+def test_resume_each_phase(adaptive_config, samples, tmp_path, phase, pause_after, beta):
+    adaptive_config.task.phase = phase
     adaptive_config.task.entropy_beta = beta
-    adaptive_config.loader.batch_size = 2
-    full, train, validation = assemble(adaptive_config, samples, tmp_path / "full")
-    full.fit(train, validation, 3)
-    part, train, validation = assemble(adaptive_config, samples, tmp_path / "part")
-    part.fit(train, validation, pause_after)
-    assert (tmp_path / "part/checkpoints/best.pt").exists() is (pause_after > 1)
-    resumed, train, validation = assemble(adaptive_config, samples, tmp_path / "resumed")
+    adaptive_config.loader.batch_size = 3
+    full, training, validation = assemble(adaptive_config, samples, tmp_path / "full")
+    full.fit(training, validation, 3)
+    part, training, validation = assemble(adaptive_config, samples, tmp_path / "part")
+    part.fit(training, validation, pause_after)
+    assert (tmp_path / "part/checkpoints/best.pt").exists()
+    resumed, training, validation = assemble(adaptive_config, samples, tmp_path / "resumed")
     resumed.restore(tmp_path / "part/checkpoints/last.pt")
-    resumed.fit(train, validation, 3)
+    resumed.fit(training, validation, 3)
     for key, value in full.model.state_dict().items():
         torch.testing.assert_close(value, resumed.model.state_dict()[key], rtol=0, atol=0)
     assert full.best_value == resumed.best_value
     saved = load_checkpoint(tmp_path / "resumed/checkpoints/last.pt")
     assert saved["task"] == resumed.task.state_dict()
-    assert saved["task"]["warmup_epochs"] == 1
-    assert saved["task"]["entropy_beta"] == saved["config"]["task"]["entropy_beta"] == beta
-    assert "lambda_compute" not in saved["config"]["task"]
-    assert "_lambda" not in saved["config"]["experiment_name"]
+    assert saved["task"]["phase"] == phase
     with (tmp_path / "full/metrics.csv").open() as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 3
+    assert full.best_value == min(float(row["validation_mae"]) for row in rows)
     for stage in ("train", "validation"):
-        assert f"{stage}_compute_loss" not in rows[0]
         for row in rows:
-            prediction_loss = float(row[f"{stage}_prediction_loss"])
-            entropy_loss = float(row[f"{stage}_entropy_loss"])
-            assert float(row[f"{stage}_loss"]) == pytest.approx(prediction_loss + entropy_loss)
-            if row[f"{stage}_halting_entropy"]:
-                assert entropy_loss == pytest.approx(
+            assert float(row[f"{stage}_loss"]) == pytest.approx(
+                float(row[f"{stage}_prediction_loss"]) + float(row[f"{stage}_entropy_loss"]),
+            )
+            if phase == "predictor":
+                assert float(row[f"{stage}_entropy_loss"]) == 0
+            else:
+                assert float(row[f"{stage}_entropy_loss"]) == pytest.approx(
                     -beta * float(row[f"{stage}_halting_entropy"]), abs=1e-8,
                 )
-            if beta == 0:
-                assert float(row[f"{stage}_loss"]) == prediction_loss
-    assert rows[0]["train_expected_depth"] == ""
-    assert rows[0]["train_halting_entropy"] == ""
-    assert float(rows[0]["train_entropy_loss"]) == 0
-    assert float(rows[1]["train_expected_depth"]) > 0
-    assert float(rows[1]["train_executed_depth"]) == 4
+    if phase == "predictor":
+        assert "validation_mean_depth_mae" in rows[0]
+        assert "validation_final_depth_mae" in rows[0]
 
 
-def test_warmup_coverage_no_controller_update_and_adaptive_updates(adaptive_config, batch):
+@pytest.mark.parametrize("phase", ["predictor", "halting"])
+def test_only_selected_parameters_update(adaptive_config, batch, phase):
+    adaptive_config.task.phase = phase
     model = build_egnn(adaptive_config.model, "mu")
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    task.on_epoch_start(model, 0)
-    original = {
-        key: value.clone() for key, value in model.execution.controller.state_dict().items()
-    }
+    task.configure_model(model)
+    optimizer = build_optimizer(adaptive_config.optimizer,
+                                (p for p in model.parameters() if p.requires_grad))
+    before = {key: value.clone() for key, value in model.state_dict().items()}
     observed = set()
     for _ in range(40):
+        model.train()
         optimizer.zero_grad(set_to_none=True)
         result = task.run(model, batch, "train")
-        assert result.statistics["entropy_loss"] == 0
-        assert result.statistics["halting_entropy"] is None
         observed.add(result.statistics["executed_depth"])
         result.loss.backward()
-        assert all(p.grad is None for p in model.execution.controller.parameters())
+        for parameter in model.parameters():
+            if not parameter.requires_grad:
+                assert parameter.grad is None
         optimizer.step()
-    assert observed == {1, 2, 3, 4}
-    for key, value in original.items():
-        torch.testing.assert_close(
-            value, model.execution.controller.state_dict()[key], rtol=0, atol=0
-        )
-    task.on_epoch_start(model, 1)
-    optimizer.zero_grad(set_to_none=True)
-    task.run(model, batch, "train").loss.backward()
-    optimizer.step()
-    assert any(not torch.equal(value, model.execution.controller.state_dict()[key])
-               for key, value in original.items())
+    changed = []
+    for key, value in model.state_dict().items():
+        controller = key.startswith("execution.controller.")
+        frozen = controller if phase == "predictor" else not controller
+        if frozen:
+            torch.testing.assert_close(before[key], value, rtol=0, atol=0)
+        else:
+            changed.append(not torch.equal(before[key], value))
+    assert any(changed)
+    assert observed == ({1, 2, 3, 4} if phase == "predictor" else {4})
+    if phase == "halting":
+        assert not model.operators.training
+        assert model.execution.controller.training
 
 
-def test_small_adaptive_problem_learns(adaptive_config, batch):
-    adaptive_config.task.warmup_epochs = 0
+def test_predictor_batch_shares_one_depth_and_validation_skips_controller(
+    adaptive_config, batch, monkeypatch,
+):
     model = build_egnn(adaptive_config.model, "mu")
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
-    initial = task.run(model, batch, "train").statistics["prediction_loss"]
-    for _ in range(180):
-        optimizer.zero_grad()
-        result = task.run(model, batch, "train")
-        result.loss.backward()
-        optimizer.step()
-    final = task.run(model, batch, "validation").statistics["prediction_loss"]
-    assert final < initial * 0.2, (initial, final)
+    task.configure_model(model)
+
+    def forbidden(*args):
+        pytest.fail("Predictor training/validation must not call the controller")
+
+    monkeypatch.setattr(model.execution.controller, "forward", forbidden)
+    for _ in range(10):
+        output = task.predict(model, batch, execution_mode="random_depth")
+        assert output.adaptive.executed_depth.unique().numel() == 1
+        assert output.adaptive.halt_depth.equal(output.adaptive.executed_depth)
+    model.eval()
+    with torch.no_grad():
+        result = task.run(model, batch, "validation")
+    assert result.statistics["executed_depth"] == 4
+    assert result.statistics["entropy_loss"] == 0
 
 
-@pytest.mark.parametrize("value", [-1, 0.5, True])
-def test_invalid_task(adaptive_config, value):
-    adaptive_config.task.warmup_epochs = value
-    with pytest.raises(ValueError):
+def test_oracle_metrics_denormalization_ties_and_uneven_batches(
+    adaptive_config, samples, tmp_path, monkeypatch,
+):
+    adaptive_config.loader.batch_size = 3
+    trainer, _, validation = assemble(adaptive_config, samples, tmp_path / "oracle")
+    errors = torch.tensor([[1., -1., 3., 4.], [5., 0., -2., 3.],
+                           [4., 3., -1., 2.], [2., 4., 6., 8.]])
+
+    def predictions(model, batch, trace=None, *, execution_mode=None):
+        assert execution_mode == "predictor_full"
+        assert trace.predictions
+        target = trainer.task.targets(batch)
+        ids = target[:, 0].long() - 1
+        values = trainer.task.transform.encode(target + errors[ids])
+        return ModelOutput(values[:, -1:], {k + 1: values[:, k:k + 1] for k in range(4)})
+
+    monkeypatch.setattr(trainer.task, "predict", predictions)
+    metrics = trainer._epoch(validation, False)
+    assert metrics["mae"] == pytest.approx(1.)
+    assert metrics["rmse"] == pytest.approx(math.sqrt(1.5))
+    assert metrics["oracle_depth"] == pytest.approx(1.75)
+    assert metrics["mean_depth_mae"] == pytest.approx(errors.abs().mean().item())
+    assert metrics["final_depth_mae"] == pytest.approx(errors[:, -1].abs().mean().item())
+    assert metrics["loss"] == pytest.approx(errors.abs().mean().item() / 2.)
+
+
+@pytest.mark.parametrize("beta", [0., 0.01])
+def test_halting_loss_and_cdf_metric(adaptive_config, batch, beta):
+    adaptive_config.task.phase = "halting"
+    adaptive_config.task.entropy_beta = beta
+    model = build_egnn(adaptive_config.model, "mu")
+    task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform(2.5, 2.))
+    task.configure_model(model)
+    result = task.run(model, batch, "train")
+    output = task.predict(model, batch, execution_mode="full")
+    p = output.adaptive.stop_probabilities
+    expected = adaptive_loss(torch.stack(list(output.predictions_by_depth.values()), 1),
+                             task.transform.encode(task.targets(batch)), p)
+    expected = expected + beta * (p * p.clamp_min(1e-12).log()).sum(1).mean()
+    torch.testing.assert_close(result.loss, expected)
+    torch.testing.assert_close(result.prediction, task.transform.decode(output.prediction))
+    parameters = tuple(model.execution.controller.parameters())
+    actual = torch.autograd.grad(result.loss, parameters)
+    reference = torch.autograd.grad(expected, parameters)
+    for left, right in zip(actual, reference, strict=True):
+        torch.testing.assert_close(left, right)
+    model.eval()
+    with torch.no_grad():
+        validation = task.run(model, batch, "validation")
+        hard = task.predict(model, batch, execution_mode="hard")
+    torch.testing.assert_close(validation.prediction, task.transform.decode(hard.prediction),
+                               rtol=1e-5, atol=1e-5)
+
+
+def test_entropy_updates_controller_toward_uniform_with_equal_errors(adaptive_config, batch):
+    adaptive_config.task.phase = "halting"
+    adaptive_config.model.execution.depth = 2
+    model = build_egnn(adaptive_config.model, "mu")
+    task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
+    task.configure_model(model)
+    gate = model.execution.controller.network[-1]
+    batch.target.zero_()
+    with torch.no_grad():
+        for parameter in model.head.parameters():
+            parameter.zero_()
+        gate.weight.zero_()
+        gate.bias.fill_(math.log(4))
+    optimizer = torch.optim.SGD(model.execution.controller.parameters(), lr=1.0)
+    before = task.run(model, batch, "train")
+    assert before.statistics["prediction_loss"] == 0
+    assert before.loss.item() < 0
+    before.loss.backward()
+    torch.testing.assert_close(gate.bias.grad,
+                               torch.full_like(gate.bias, 0.01 * 0.8 * 0.2 * math.log(4)),
+                               rtol=1e-4, atol=1e-7)
+    optimizer.step()
+    assert task.run(model, batch, "train").statistics["halting_entropy"] > (
+        before.statistics["halting_entropy"]
+    )
+
+
+@pytest.mark.parametrize("value", ["joint", "warmup", "", None])
+def test_invalid_phase(adaptive_config, value):
+    adaptive_config.task.phase = value
+    with pytest.raises(ValueError, match="phase"):
         AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
 
 
@@ -137,123 +232,93 @@ def test_invalid_entropy_beta(adaptive_config, value):
         AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("criterion", ["mae", "mse"])
-def test_zero_entropy_preserves_loss_and_gradients(adaptive_config, batch, legacy, criterion):
-    adaptive_config.task.entropy_beta = 0.0
-    if legacy:
-        del adaptive_config.task.entropy_beta
-    adaptive_config.task.loss = criterion
-    model = build_egnn(adaptive_config.model, "mu")
-    task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
-    task.on_epoch_start(model, adaptive_config.task.warmup_epochs)
-    result = task.run(model, batch, "train")
-    output = task.predict(model, batch, execution_mode="full")
-    expected = adaptive_loss(
-        torch.stack(list(output.predictions_by_depth.values()), 1),
-        task.transform.encode(task.targets(batch)), output.adaptive.stop_probabilities, criterion,
-    )
-    torch.testing.assert_close(result.loss, expected, rtol=0, atol=0)
-    parameters = tuple(model.parameters())
-    actual_grads = torch.autograd.grad(result.loss, parameters, allow_unused=True)
-    expected_grads = torch.autograd.grad(expected, parameters, allow_unused=True)
-    for actual, expected_grad in zip(actual_grads, expected_grads, strict=True):
-        if expected_grad is None:
-            assert actual is None
-        else:
-            torch.testing.assert_close(actual, expected_grad, rtol=0, atol=0)
-    assert result.statistics["entropy_loss"] == 0
-    assert task.entropy_beta == 0
-
-
-@pytest.mark.parametrize("epoch,stage", [(0, "train"), (0, "validation"),
-                                        (1, "train"), (1, "validation")])
-def test_entropy_phase_and_loss_accounting(adaptive_config, batch, epoch, stage):
-    model = build_egnn(adaptive_config.model, "mu")
-    task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
-    task.on_epoch_start(model, epoch)
-    result = task.run(model, batch, stage)
-    stats = result.statistics
-    if epoch == 0 and stage == "train":
-        assert stats["halting_entropy"] is None
-        assert stats["entropy_loss"] == 0
-    else:
-        assert stats["halting_entropy"] > 0
-        assert stats["entropy_loss"] == pytest.approx(-0.01 * stats["halting_entropy"])
-    assert result.loss.item() == pytest.approx(stats["prediction_loss"] + stats["entropy_loss"])
-
-
-def test_entropy_updates_controller_toward_uniform_with_equal_errors(adaptive_config, batch):
-    adaptive_config.model.execution.depth = 2
-    model = build_egnn(adaptive_config.model, "mu")
-    task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
-    task.on_epoch_start(model, adaptive_config.task.warmup_epochs)
-    gate = model.execution.controller.network[-1]
-    batch.target.zero_()
-    with torch.no_grad():
-        # Equal predictions at both depths remove the prediction-loss gate signal.
-        for parameter in model.head.parameters():
-            parameter.zero_()
-        gate.weight.zero_()
-        gate.bias.fill_(math.log(4))  # q_1=0.8 -> p=(0.8, 0.2).
-    optimizer = torch.optim.SGD(model.execution.controller.parameters(), lr=1.0)
-    before = task.run(model, batch, "train")
-    assert before.statistics["prediction_loss"] == 0
-    assert before.loss.item() < 0  # A valid total loss when the entropy reward exceeds the error.
-    before.loss.backward()
-    torch.testing.assert_close(
-        gate.bias.grad,
-        torch.full_like(gate.bias, task.entropy_beta * 0.8 * 0.2 * math.log(4)),
-        rtol=1e-4, atol=1e-7,
-    )
-    optimizer.step()
-    after = task.run(model, batch, "train")
-    assert after.statistics["halting_entropy"] > before.statistics["halting_entropy"]
-
-
-@pytest.mark.parametrize("beta", [0.0, 0.01])
-def test_task_state_rejects_changed_entropy_beta(adaptive_config, beta):
-    adaptive_config.task.entropy_beta = beta
+@pytest.mark.parametrize("key,value", [("phase", "halting"), ("entropy_beta", 0.1)])
+def test_task_state_rejects_changes(adaptive_config, key, value):
     task = AdaptiveRegressionTask(adaptive_config.task, 0, "D", TargetTransform())
     state = task.state_dict()
-    state["entropy_beta"] = beta + 0.01
-    with pytest.raises(ValueError, match="entropy_beta"):
+    state[key] = value
+    with pytest.raises(ValueError, match=key):
         task.load_state_dict(state)
-    del state["entropy_beta"]
-    if beta == 0:
-        task.load_state_dict(state)
-    else:
-        with pytest.raises(ValueError, match="entropy_beta"):
-            task.load_state_dict(state)
 
 
-@pytest.mark.parametrize("beta", [0.0, 0.01])
-def test_legacy_resume_defaults_entropy_to_zero(adaptive_config, samples, tmp_path, beta):
-    adaptive_config.task.entropy_beta = 0.0
-    original, train, validation = assemble(adaptive_config, samples, tmp_path / "original")
-    original.fit(train, validation, 1)
-    path = tmp_path / "original/checkpoints/last.pt"
+def test_cross_stage_initialization(adaptive_config, samples, tmp_path):
+    source, training, validation = assemble(adaptive_config, samples, tmp_path / "source")
+    source.fit(training, validation, 1)
+    adaptive_config.task.phase = "halting"
+    destination, _, _ = assemble(adaptive_config, samples, tmp_path / "destination")
+    controller = {
+        k: v.clone() for k, v in destination.model.execution.controller.state_dict().items()
+    }
+    path = tmp_path / "source/checkpoints/best.pt"
+    # Deliberately different controller proves that its source weights are ignored.
     saved = load_checkpoint(path)
-    del saved["config"]["task"]["entropy_beta"]
-    del saved["task"]["entropy_beta"]
+    for key in saved["model"]:
+        if key.startswith("execution.controller."):
+            saved["model"][key].fill_(42.)
     torch.save(saved, path)
-    adaptive_config.task.entropy_beta = beta
-    resumed, train, validation = assemble(adaptive_config, samples, tmp_path / "resumed")
-    if beta > 0:
-        with pytest.raises(ValueError, match="configuration mismatch: task"):
-            resumed.restore(path)
-    else:
-        resumed.restore(path)
-        assert resumed.task.entropy_beta == 0
-        resumed.fit(train, validation, 2)
-        updated = load_checkpoint(tmp_path / "resumed/checkpoints/last.pt")
-        assert updated["task"]["entropy_beta"] == 0
+    provenance = initialize_halting(path, destination.model, destination.task, adaptive_config,
+                                    destination.metadata)
+    for key, value in destination.model.state_dict().items():
+        if not key.startswith("execution.controller."):
+            torch.testing.assert_close(value, saved["model"][key], rtol=0, atol=0)
+    for key, value in controller.items():
+        assert torch.equal(value, destination.model.execution.controller.state_dict()[key])
+    assert destination.task.transform.state_dict() == saved["task"]["transform"]
+    assert destination.optimizer.state_dict()["state"] == {}
+    assert destination.start_epoch == 0 and destination.best_value == float("inf")
+    assert provenance["init_from"] == str(path.resolve())
+    assert len(provenance["init_from_sha256"]) == 64
 
 
-def test_resume_still_rejects_other_task_changes(adaptive_config, samples, tmp_path):
-    original, train, validation = assemble(adaptive_config, samples, tmp_path / "original")
-    original.fit(train, validation, 1)
-    adaptive_config.task.loss = "mse"
-    resumed, _, _ = assemble(adaptive_config, samples, tmp_path / "resumed")
+@pytest.mark.parametrize("section,key,value", [
+    ("task", "phase", "halting"), ("task", "normalization", "standard"),
+    ("task", "target", "alpha"), ("model", "hidden_dim", 99),
+    ("metadata", "split_id", "other"), ("metadata", "unit", "eV"),
+])
+def test_initialization_rejects_mismatches(adaptive_config, samples, tmp_path, section, key, value):
+    source, training, validation = assemble(adaptive_config, samples, tmp_path / "source")
+    source.fit(training, validation, 1)
+    path = tmp_path / "source/checkpoints/last.pt"
+    saved = load_checkpoint(path)
+    (saved["metadata"] if section == "metadata" else saved["config"][section])[key] = value
+    torch.save(saved, path)
+    adaptive_config.task.phase = "halting"
+    destination, _, _ = assemble(adaptive_config, samples, tmp_path / "destination")
+    with pytest.raises(ValueError):
+        initialize_halting(path, destination.model, destination.task, adaptive_config,
+                           destination.metadata)
+
+
+def test_two_stage_application_and_resume(adaptive_config, samples, tmp_path, monkeypatch):
+    config = adaptive_config
+    config.output_root = str(tmp_path)
+    # A fixed scheduler horizon permits resuming from epoch 1 to epoch 2.
+    config.trainer.scheduler.t_max = 3
+    config.trainer.epochs = 1
+    bundle = DatasetBundle(samples[:2], samples[2:], samples[2:],
+                           {"split_id": "fixture", "dataset": "qm9"}, 0, "D")
+    monkeypatch.setitem(DATASETS, "qm9", lambda *args: bundle)
+    source = train(config)
+    config.task.phase = "halting"
+    with pytest.raises(ValueError, match="requires init_from or resume"):
+        train(config)
+    config.init_from = str(source / "checkpoints/best.pt")
+    destination = train(config)
+    saved = load_checkpoint(destination / "checkpoints/last.pt")
+    original = load_checkpoint(config.init_from)
+    for key, value in original["model"].items():
+        if not key.startswith("execution.controller."):
+            assert torch.equal(value, saved["model"][key])
+    assert saved["metadata"]["init_from"] == config.init_from
+    config.resume = str(destination / "checkpoints/last.pt")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        train(config)
+    config.init_from = None
+    config.trainer.epochs = 2
+    resumed = train(config)
+    saved_resume = load_checkpoint(resumed / "checkpoints/last.pt")
+    assert saved_resume["epoch"] == 1
+    assert saved_resume["metadata"]["init_from"] == saved["metadata"]["init_from"]
+    config.task.phase = "predictor"
     with pytest.raises(ValueError, match="configuration mismatch: task"):
-        resumed.restore(tmp_path / "original/checkpoints/last.pt")
+        train(config)

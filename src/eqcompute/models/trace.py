@@ -25,7 +25,7 @@ class AdaptiveInfo:
     halt_depth: Tensor
     executed_depth: Tensor
     valid_depth_mask: Tensor
-    # Full distributions are unavailable after real early exit or during warm-up.
+    # Full distributions are unavailable after real early exit or during random-depth training.
     halting_probabilities: Tensor | None = None
     stop_probabilities: Tensor | None = None
     expected_depth: Tensor | None = None

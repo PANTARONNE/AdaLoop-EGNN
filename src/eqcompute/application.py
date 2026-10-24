@@ -16,6 +16,7 @@ from eqcompute.factories import DATASETS, MODELS, TASKS, construct
 from eqcompute.metrics.regression import RegressionMetrics
 from eqcompute.tasks.targetTransform import TargetTransform
 from eqcompute.training.checkpoint import seed_everything
+from eqcompute.training.initialization import initialize_halting
 from eqcompute.training.optim import build_optimizer
 from eqcompute.training.trainer import Trainer
 
@@ -72,8 +73,12 @@ def train(config):
     adaptive = config.model.execution.name == "adaptive"
     if adaptive != (config.task.name == "adaptive_regression"):
         raise ValueError("Adaptive execution and adaptive_regression must be used together")
-    if adaptive and config.task.warmup_epochs >= config.trainer.epochs:
-        raise ValueError("warmup_epochs must be less than trainer.epochs")
+    if config.init_from and config.resume:
+        raise ValueError("init_from and resume are mutually exclusive")
+    if config.init_from and (not adaptive or config.task.phase != "halting"):
+        raise ValueError("init_from is only supported for the halting phase")
+    if adaptive and config.task.phase == "halting" and not (config.init_from or config.resume):
+        raise ValueError("The halting phase requires init_from or resume")
     # Construct and validate model before downloading data.
     model = construct(MODELS, config.model.name, config.model, config.task.target).to(device)
     config.dataset.root = str(Path(config.dataset.root).resolve())
@@ -82,7 +87,11 @@ def train(config):
     task = construct(
         TASKS, config.task.name, config.task, bundle.target_index, bundle.unit, transform
     )
-    optimizer = build_optimizer(config.optimizer, model.parameters())
+    if adaptive:
+        task.configure_model(model)
+    optimizer = build_optimizer(
+        config.optimizer, (p for p in model.parameters() if p.requires_grad),
+    )
     generator = torch.Generator().manual_seed(config.seed)
     loaders = {
         name: make_loader(
@@ -116,6 +125,8 @@ def train(config):
         "parameter_count": sum(p.numel() for p in model.parameters()),
         "resume_from": config.resume,
     }
+    if config.init_from:
+        metadata.update(initialize_halting(config.init_from, model, task, config, metadata))
     source_digest = hashlib.sha256()
     source_root = Path(__file__).parent
     for source in sorted(source_root.rglob("*.py")):
@@ -130,6 +141,7 @@ def train(config):
     )
     if config.resume:
         trainer.restore(config.resume)
+        (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
     logging.getLogger(__name__).info(
         "output=%s parameters=%d device=%s", output_dir, metadata["parameter_count"], device
     )

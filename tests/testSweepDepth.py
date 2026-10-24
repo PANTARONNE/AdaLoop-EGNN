@@ -23,7 +23,7 @@ BASE_ARGS = ["--gpus", "0,1", "--depths", "2,4", "--seeds", "0,7", "--weight-tyi
     ("qm9_egnn", 96, False),
     ("qm9_loop_egnn", 96, False),
     ("qm9_loop_egnn_diagnostic", 96, False),
-    ("qm9_adaloop_egnn", 96, True),
+    ("qm9_adaloop_egnn_predictor", 96, True),
     ("qm9_adaloop_egnn_smoke", 16, True),
 ])
 def test_plan_cartesian_product_presets_and_output_paths(
