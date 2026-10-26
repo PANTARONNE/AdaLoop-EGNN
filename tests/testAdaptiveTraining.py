@@ -289,7 +289,10 @@ def test_initialization_rejects_mismatches(adaptive_config, samples, tmp_path, s
                            destination.metadata)
 
 
-def test_two_stage_application_and_resume(adaptive_config, samples, tmp_path, monkeypatch):
+@pytest.mark.parametrize("halting_loss", ["expected", "soft_cdf"])
+def test_two_stage_application_and_resume(
+    adaptive_config, samples, tmp_path, monkeypatch, halting_loss,
+):
     config = adaptive_config
     config.output_root = str(tmp_path)
     # A fixed scheduler horizon permits resuming from epoch 1 to epoch 2.
@@ -300,11 +303,13 @@ def test_two_stage_application_and_resume(adaptive_config, samples, tmp_path, mo
     monkeypatch.setitem(DATASETS, "qm9", lambda *args: bundle)
     source = train(config)
     config.task.phase = "halting"
+    config.task.halting_loss = halting_loss
     with pytest.raises(ValueError, match="requires init_from or resume"):
         train(config)
     config.init_from = str(source / "checkpoints/best.pt")
     destination = train(config)
     saved = load_checkpoint(destination / "checkpoints/last.pt")
+    assert saved["task"]["halting_loss"] == halting_loss
     original = load_checkpoint(config.init_from)
     for key, value in original["model"].items():
         if not key.startswith("execution.controller."):

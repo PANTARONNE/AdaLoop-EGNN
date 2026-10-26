@@ -95,14 +95,26 @@ python scripts/train.py experiment=qm9_adaloop_egnn_halting task.target=mu \
 
 第一阶段的 `validation_mae` 是 **oracle MAE**，使用真实标签选层，是理想选层的误差下限。
 
-第二阶段固定整个预测器及其状态，只更新停止器。训练完整展开到 K，保留原停止概率加权误差与熵正则：
+第二阶段固定整个预测器及其状态，只更新停止器，训练完整展开到 K。
+`qm9_adaloop_egnn_halting` 默认使用 `task.halting_loss=soft_cdf`，
+以平滑 CDF 跨越推理阈值的位置生成权重 `w`，再加权每层预测误差：
 
 ```text
-loss = mean_i sum_k p[i,k] * abs(z_pred[i,k] - z_target[i])
+F[k] = sum_{j<=k} p[j]
+S[0] = 0; S[K] = 1
+S[k] = sigmoid((F[k] - threshold) / temperature)  # 1 <= k < K
+w[k] = S[k] - S[k-1]
+loss = mean_i sum_k w[i,k] * abs(z_pred[i,k] - z_target[i])
        - entropy_beta * mean_i H(p[i])
 ```
 
-`z` 为归一化目标或预测，`p` 为各深度的停止概率质量，`task.entropy_beta` 默认 `0.01`，可设为 `0`。
+`z` 为归一化目标或预测，`p` 为原停止概率质量；熵仍对 `p` 计算，不对 `w` 计算。
+`task.soft_cdf_temperature` 默认 `0.1`，是固定的正温度，不自动退火。
+`threshold` 复用 `model.execution.threshold`。`task.entropy_beta` 保持默认 `0.01`，可设为 `0`。
+若要对照原来的概率期望损失，在停止器训练命令中追加 `task.halting_loss=expected`，此时权重为 `p`。
+两种模式都先计算各层误差再加权，不通过混合预测抵消误差。
+
+`prediction_loss` 记录所选训练目标，`expected_prediction_loss` 始终记录原 `p` 下的归一化期望误差。
 验证每个分子取停止概率 CDF 首次达到 `model.execution.threshold=0.5` 的深度，
 将该层预测还原到原单位后统计 `validation_mae`，并据此选模。
 该指标不含熵项。两阶段 `validation_mae` 的选层方式不同，比较结果时需注明阶段。
@@ -110,6 +122,8 @@ loss = mean_i sum_k p[i,k] * abs(z_pred[i,k] - z_target[i])
 `init_from` 可指定第一阶段的 `best.pt` 或 `last.pt`，只复制预测器权重和归一化参数；
 停止器重新初始化，优化器、cosine 周期、epoch 和历史最佳指标均重新开始。
 来源路径和 SHA256 记录在 metadata 中。停止器阶段必须提供 `init_from` 或同阶段 `resume`。
+Checkpoint 保存损失类型与温度，恢复时须保持一致。缺少新字段的旧 checkpoint 按 `expected` 读取，
+不能通过 `resume` 将旧停止器训练切换成 soft-CDF；可以用原 predictor checkpoint 初始化新的 soft-CDF 运行。
 
 ### 基线与逐深度诊断
 

@@ -18,6 +18,8 @@ task:
   normalization: mad
   phase: predictor
   entropy_beta: 0.01
+  halting_loss: expected
+  soft_cdf_temperature: 0.1
 trainer:
   epochs: 1000
 experiment_name: qm9_${task.target}_adaloop_${task.phase}_k${model.execution.depth}_s${seed}

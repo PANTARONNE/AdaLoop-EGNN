@@ -20,6 +20,41 @@ def halting_entropy(probabilities):
     return -(probabilities * probabilities.clamp_min(1e-12).log()).sum(1).mean()
 
 
+def _validate_temperature(temperature):
+    if (
+        isinstance(temperature, bool) or not isinstance(temperature, Real)
+        or not math.isfinite(temperature) or temperature <= 0
+    ):
+        raise ValueError("soft_cdf_temperature must be a finite positive number")
+    return float(temperature)
+
+
+def soft_cdf_weights(probabilities, threshold, temperature):
+    """Smooth first CDF crossing; input stop masses and output weights are [B,K].
+
+    The CDF must come from a valid stopping distribution. Fixing the endpoint
+    crossing values to 0 and 1 preserves unit total mass, including when K=1.
+    As temperature tends to zero this approaches hard CDF selection except at
+    exact threshold ties, where sigmoid assigns half mass on either side.
+    """
+    if probabilities.ndim != 2 or probabilities.shape[1] < 1:
+        raise ValueError("probabilities must have shape [B, K] with K >= 1")
+    if (
+        isinstance(threshold, bool) or not isinstance(threshold, Real)
+        or not math.isfinite(threshold) or not 0 < threshold < 1
+    ):
+        raise ValueError("threshold must lie strictly between 0 and 1")
+    temperature = _validate_temperature(temperature)
+    cdf = probabilities[:, :-1].cumsum(1)
+    reached = torch.sigmoid((cdf - threshold) / temperature)
+    boundary_shape = (probabilities.shape[0], 1)
+    reached = torch.cat([
+        probabilities.new_zeros(boundary_shape), reached,
+        probabilities.new_ones(boundary_shape),
+    ], dim=1)
+    return reached[:, 1:] - reached[:, :-1]
+
+
 class AdaptiveRegressionTask(RegressionTask):
     supervision_modes = ("adaptive",)
 
@@ -34,6 +69,13 @@ class AdaptiveRegressionTask(RegressionTask):
         ):
             raise ValueError("entropy_beta must be a finite nonnegative number")
         self.entropy_beta = float(beta)
+        # Missing fields describe checkpoints trained with the original objective.
+        self.halting_loss = config.get("halting_loss", "expected")
+        if self.halting_loss not in ("expected", "soft_cdf"):
+            raise ValueError("halting_loss must be expected or soft_cdf")
+        self.soft_cdf_temperature = _validate_temperature(
+            config.get("soft_cdf_temperature", 0.1)
+        )
 
     def configure_model(self, model):
         """Apply before constructing the optimizer, including on resume."""
@@ -61,10 +103,15 @@ class AdaptiveRegressionTask(RegressionTask):
         normalized = self.transform.encode(target)
         info = output.adaptive
         values = torch.stack(list(output.predictions_by_depth.values()), 1)
-        prediction_loss = adaptive_loss(
-            values, normalized, info.stop_probabilities, self.config.loss,
-        )
         p = info.stop_probabilities
+        expected_prediction_loss = adaptive_loss(values, normalized, p, self.config.loss)
+        if self.halting_loss == "soft_cdf":
+            weights = soft_cdf_weights(
+                p, model.execution.threshold, self.soft_cdf_temperature,
+            )
+            prediction_loss = adaptive_loss(values, normalized, weights, self.config.loss)
+        else:
+            prediction_loss = expected_prediction_loss
         entropy = None if p is None else halting_entropy(p)
         entropy_loss = prediction_loss.new_zeros(())
         loss = prediction_loss
@@ -73,6 +120,7 @@ class AdaptiveRegressionTask(RegressionTask):
             loss = prediction_loss + entropy_loss
         statistics = {
             "prediction_loss": prediction_loss.detach().item(),
+            "expected_prediction_loss": expected_prediction_loss.detach().item(),
             "entropy_loss": entropy_loss.detach().item(),
             "expected_depth": (
                 None if info.expected_depth is None else info.expected_depth.detach().mean().item()
@@ -128,6 +176,8 @@ class AdaptiveRegressionTask(RegressionTask):
         return {
             **super().state_dict(), "phase": self.config.phase,
             "entropy_beta": self.entropy_beta,
+            "halting_loss": self.halting_loss,
+            "soft_cdf_temperature": self.soft_cdf_temperature,
         }
 
     def load_state_dict(self, state):
@@ -135,4 +185,8 @@ class AdaptiveRegressionTask(RegressionTask):
             raise ValueError("Checkpoint phase mismatch")
         if state["entropy_beta"] != self.entropy_beta:
             raise ValueError("Checkpoint entropy_beta mismatch")
+        if state.get("halting_loss", "expected") != self.halting_loss:
+            raise ValueError("Checkpoint halting_loss mismatch")
+        if state.get("soft_cdf_temperature", 0.1) != self.soft_cdf_temperature:
+            raise ValueError("Checkpoint soft_cdf_temperature mismatch")
         super().load_state_dict(state)

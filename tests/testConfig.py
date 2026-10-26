@@ -57,6 +57,10 @@ def test_egnn_backbone_presets_use_local_pyg_qm9(preset):
     assert config.task.normalization == "mad"
     if config.task.name == "adaptive_regression":
         assert config.task.entropy_beta == 0.01
+        assert config.task.soft_cdf_temperature == 0.1
+        assert config.task.halting_loss == (
+            "soft_cdf" if preset == "qm9_adaloop_egnn_halting" else "expected"
+        )
         assert "warmup_epochs" not in config.task
         if not preset.endswith("smoke"):
             expected = "halting" if preset.endswith("halting") else "predictor"
@@ -99,3 +103,20 @@ def test_default_is_egnn_baseline():
     assert default.optimizer.learning_rate == 0.001
     assert set(MODELS) == {"egnn"}
     assert set(DATASETS) == {"qm9"}
+
+
+def test_halting_objective_can_be_overridden():
+    from pathlib import Path
+
+    with initialize_config_dir(
+        config_dir=str(Path(__file__).resolve().parents[1] / "configs"), version_base="1.3"
+    ):
+        baseline = compose(config_name="config", overrides=[
+            "experiment=qm9_adaloop_egnn_halting", "task.halting_loss=expected",
+        ])
+        smooth = compose(config_name="config", overrides=[
+            "experiment=qm9_adaloop_egnn_halting", "task.soft_cdf_temperature=0.05",
+        ])
+    assert baseline.task.halting_loss == "expected"
+    assert smooth.task.halting_loss == "soft_cdf"
+    assert smooth.task.soft_cdf_temperature == 0.05

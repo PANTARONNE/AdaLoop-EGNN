@@ -48,6 +48,14 @@ class Trainer:
         checkpoint = load_checkpoint(path)
         for key in ("model", "task", "dataset", "optimizer", "loader", "seed"):
             saved, current = checkpoint["config"][key], self.config[key]
+            if key == "task":
+                # Old adaptive checkpoints predate explicit halting loss settings.
+                # Compare copies so checkpoint provenance remains unchanged.
+                saved, current = dict(saved), dict(current)
+                for task_config in (saved, current):
+                    if task_config.get("name") == "adaptive_regression":
+                        task_config.setdefault("halting_loss", "expected")
+                        task_config.setdefault("soft_cdf_temperature", 0.1)
             if saved != current:
                 raise ValueError(f"Resume configuration mismatch: {key}")
         if (

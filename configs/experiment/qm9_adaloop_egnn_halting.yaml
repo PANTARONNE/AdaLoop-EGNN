@@ -5,5 +5,7 @@ defaults:
 
 task:
   phase: halting
+  halting_loss: soft_cdf
+  entropy_beta: 0.001
 trainer:
-  epochs: 500
+  epochs: 300

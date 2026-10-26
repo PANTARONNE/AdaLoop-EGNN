@@ -34,6 +34,7 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
     config.trainer.epochs = 1
     predictor_output = train(config)
     config.task.phase = "halting"
+    config.task.halting_loss = "soft_cdf"
     config.trainer.epochs = 2
     config.init_from = str(predictor_output / "checkpoints/best.pt")
     output = train(config)
@@ -76,6 +77,8 @@ def run_smoke(data_root, output_root, device="auto", normalization="mad"):
         "predictor_unchanged": True,
         "train_samples": 128, "validation_samples": 32, "test_samples": 32,
         "normalization": normalization,
+        "halting_loss": config.task.halting_loss,
+        "soft_cdf_temperature": config.task.soft_cdf_temperature,
         "validation_mae": load_checkpoint(checkpoint_path)["best_value"],
         "purpose": "local_real_data_acceptance",
         "test": metric.compute(), "max_normalized_full_hard_difference": maximum_difference,
